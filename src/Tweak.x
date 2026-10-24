@@ -3870,22 +3870,40 @@ static inline BOOL is_sideload_provision_path(NSString *path) {
 - (NSData *)token;
 @end
 
+static NSData *get_or_create_spoofed_voip_token_data(void) {
+    ZTSettings *st = [ZTSettings sharedSettings];
+    if (st.spoofedVoIPToken.length != 64) {
+        unsigned char voipBytes[32];
+        arc4random_buf(voipBytes, sizeof(voipBytes));
+        NSMutableString *vHex = [NSMutableString stringWithCapacity:64];
+        for (int i = 0; i < 32; i++) {
+            [vHex appendFormat:@"%02x", voipBytes[i]];
+        }
+        st.spoofedVoIPToken = [vHex copy];
+        st.currentVoIPToken = st.spoofedVoIPToken;
+        [st saveSettings];
+        logAudit(@"PUSH-TOKEN", [NSString stringWithFormat:@"🎲 [SYSTEM AUTO-GEN] Tự sinh Token VoIP 32-byte độc nhất tầng hệ thống: %@", st.spoofedVoIPToken]);
+    }
+
+    NSMutableData *data = [NSMutableData dataWithCapacity:32];
+    const char *chars = [st.spoofedVoIPToken UTF8String];
+    char byteChars[3] = {'\0', '\0', '\0'};
+    for (int i = 0; i < 64; i += 2) {
+        byteChars[0] = chars[i];
+        byteChars[1] = chars[i + 1];
+        unsigned char byte = (unsigned char)strtol(byteChars, NULL, 16);
+        [data appendBytes:&byte length:1];
+    }
+    return [data copy];
+}
+
 %hook PKPushCredentials
 
 - (NSData *)token {
     if (is_tweak_active()) {
         ZTSettings *st = [ZTSettings sharedSettings];
-        if (st.spoofVoIPPushToken && st.spoofedVoIPToken.length == 64) {
-            NSMutableData *data = [NSMutableData dataWithCapacity:32];
-            const char *chars = [st.spoofedVoIPToken UTF8String];
-            char byteChars[3] = {'\0', '\0', '\0'};
-            for (int i = 0; i < 64; i += 2) {
-                byteChars[0] = chars[i];
-                byteChars[1] = chars[i + 1];
-                unsigned char byte = (unsigned char)strtol(byteChars, NULL, 16);
-                [data appendBytes:&byte length:1];
-            }
-            return [data copy];
+        if (st.spoofVoIPPushToken) {
+            return get_or_create_spoofed_voip_token_data();
         }
     }
     return %orig;
@@ -3894,6 +3912,19 @@ static inline BOOL is_sideload_provision_path(NSString *path) {
 %end
 
 %hook PKPushRegistry
+
+- (NSData *)pushTokenForType:(id)type {
+    if (is_tweak_active()) {
+        ZTSettings *st = [ZTSettings sharedSettings];
+        if (st.spoofVoIPPushToken) {
+            NSString *tStr = [type description];
+            if ([tStr isEqualToString:@"PKPushTypeVoIP"] || [tStr containsString:@"VoIP"]) {
+                return get_or_create_spoofed_voip_token_data();
+            }
+        }
+    }
+    return %orig(type);
+}
 
 - (void)setDelegate:(id)delegate {
     if (delegate && is_tweak_active()) {
@@ -3924,10 +3955,11 @@ static inline BOOL is_sideload_provision_path(NSString *path) {
                                     [hex appendFormat:@"%02x", b[i]];
                                 }
                                 ZTSettings *st = [ZTSettings sharedSettings];
-                                if (st.spoofVoIPPushToken && st.spoofedVoIPToken.length == 64) {
+                                if (st.spoofVoIPPushToken) {
+                                    get_or_create_spoofed_voip_token_data();
                                     st.currentVoIPToken = st.spoofedVoIPToken;
                                     [st saveSettings];
-                                    logAudit(@"PUSH-TOKEN", [NSString stringWithFormat:@"📞 [PUSHKIT CREDENTIALS] Đã nạp Token VoIP giả lập độc nhất từ PushKit (Type=%@): %@", type ?: @"VoIP", st.spoofedVoIPToken]);
+                                    logAudit(@"PUSH-TOKEN", [NSString stringWithFormat:@"📞 [PUSHKIT CREDENTIALS] Đã cấp Token VoIP giả lập độc nhất từ PushKit (Type=%@): %@", type ?: @"VoIP", st.spoofedVoIPToken]);
                                 } else {
                                     BOOL isAPNsToken = NO;
                                     if (st.currentAPNsToken && st.currentAPNsToken.length > 0 && [hex isEqualToString:st.currentAPNsToken]) {

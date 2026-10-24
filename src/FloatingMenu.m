@@ -2328,7 +2328,9 @@ static void wipe_directory_recursively_safely(NSFileManager *fm, NSString *dirPa
                 md[@"needsKeychainPurge"] = @(YES);
                 md[@"needsNewProfile"] = @(NO);
                 md[@"justRestoredBackup"] = @(NO);
-                md[@"spoofedVoIPToken"] = @"";
+                if (settings.spoofedVoIPToken.length == 64) {
+                    md[@"spoofedVoIPToken"] = settings.spoofedVoIPToken;
+                }
                 [md writeToFile:wp atomically:YES];
             }
         }
