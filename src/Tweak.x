@@ -3593,22 +3593,27 @@ static inline uint64_t get_effective_birth_for_path(const char *path, uint64_t b
         return base_birth;
     }
 
-    // Tier 0b: System Configuration Files ("/etc", "/private/etc", "/etc/passwd", ...) (Mốc 3: t3 > t2)
-    if (strncmp(p, "/etc", 4) == 0 || strncmp(p, "/private/etc", 12) == 0) {
+    // Tier 0b: System Configuration Files & Core Dumps ("/cores", "/etc", "/private/etc", "/dev", ...) (Mốc 3: t3 > t2)
+    if (strncmp(p, "/cores", 6) == 0 ||
+        strncmp(p, "/etc", 4) == 0 ||
+        strncmp(p, "/private/etc", 12) == 0 ||
+        strncmp(p, "/dev", 4) == 0) {
         return base_birth + d_etc;
     }
 
-    // Tier 0: Phân vùng hệ thống RootFS read-only ("/", "/System/...", "/usr/...", "/bin/...", "/sbin/...") (Mốc 2: t2 > t1)
+    // Tier 0: Phân vùng hệ thống RootFS read-only ("/", "/System/...", "/usr/...", "/bin/...", "/sbin/...", "/Applications", "/Library") (Mốc 2: t2 > t1)
     if (strcmp(p, "/") == 0 ||
         strncmp(p, "/System", 7) == 0 ||
         strncmp(p, "/usr", 4) == 0 ||
         strncmp(p, "/bin", 4) == 0 ||
         strncmp(p, "/sbin", 5) == 0 ||
+        strncmp(p, "/Applications", 13) == 0 ||
+        strncmp(p, "/Library", 8) == 0 ||
         strncmp(p, "/Developer", 10) == 0) {
         return base_birth + d_root;
     }
 
-    return base_birth;
+    return base_birth + d_root;
 }
 
 #define MAX_STAT_LOG_PATHS 64
