@@ -992,6 +992,7 @@ static void purge_entire_sandbox_safely(void) {
         self.spoofVoIPPushToken = (dict[@"spoofVoIPPushToken"] != nil) ? [dict[@"spoofVoIPPushToken"] boolValue] : NO;
         self.resetTCCPromptOnWipe = (dict[@"resetTCCPromptOnWipe"] != nil) ? [dict[@"resetTCCPromptOnWipe"] boolValue] : YES;
         self.contactsPermissionDetermined = [dict[@"contactsPermissionDetermined"] boolValue];
+        self.notificationPermissionDetermined = [dict[@"notificationPermissionDetermined"] boolValue];
         if (self.spoofedVoIPToken.length == 0 && self.hasConfiguredProfile) {
             unsigned char voipBytes[32];
             arc4random_buf(voipBytes, sizeof(voipBytes));
@@ -1227,6 +1228,7 @@ static void purge_entire_sandbox_safely(void) {
     dict[@"spoofVoIPPushToken"] = @(self.spoofVoIPPushToken);
     dict[@"resetTCCPromptOnWipe"] = @(self.resetTCCPromptOnWipe);
     dict[@"contactsPermissionDetermined"] = @(self.contactsPermissionDetermined);
+    dict[@"notificationPermissionDetermined"] = @(self.notificationPermissionDetermined);
     if (self.lastWipedIDFV) dict[@"lastWipedIDFV"] = self.lastWipedIDFV;
     if (self.lastWipedIP) dict[@"lastWipedIP"] = self.lastWipedIP;
     dict[@"lastWipedTimestamp"] = @(self.lastWipedTimestamp);
@@ -1331,6 +1333,7 @@ NSString *generate_random_mac(void) {
         self.spoofedVoIPToken = p.spoofedVoIPToken;
     }
     self.contactsPermissionDetermined = NO;
+    self.notificationPermissionDetermined = NO;
 
     logAudit(@"DEVICE-GEN", [NSString stringWithFormat:@"Đã sinh máy ngẫu nhiên mới: %@ (%@) | iOS: %@ (%@) | RAM: %.1fGB | L2: %lluMB | Màn: %.0fx%.0f@%.0fx | Vùng: %@ (%@) | Tên: %@",
               self.deviceMachine, self.deviceModel, self.systemVersion, self.kernOsVersion,
@@ -2425,6 +2428,55 @@ static CFIndex my_ABAddressBookGetAuthorizationStatus(void) {
     return orig_ABAddressBookGetAuthorizationStatus ? orig_ABAddressBookGetAuthorizationStatus() : 0;
 }
 
+// ==========================================
+// HOOK USER NOTIFICATIONS: Giả lập chưa hỏi quyền thông báo sau khi Wipe
+// để Zalo tự động hiển thị lại Dialog xin quyền thông báo của iOS tự nhiên
+// ==========================================
+%hook UNNotificationSettings
+
+- (UNAuthorizationStatus)authorizationStatus {
+    if (is_tweak_active()) {
+        ZTSettings *s = [ZTSettings sharedSettings];
+        if (s.resetTCCPromptOnWipe && !s.notificationPermissionDetermined) {
+            void *c0 = __builtin_return_address(0);
+            if (is_zalo_caller(c0)) {
+                logAudit(@"TCC-NOTIF", @"🔔 Zalo kiểm tra quyền Thông Báo (UNNotificationSettings) -> [TRẢ VỀ NotDetermined (0) để Zalo hiện popup xin quyền]");
+                return UNAuthorizationStatusNotDetermined;
+            }
+        }
+    }
+    return %orig;
+}
+
+%end
+
+%hook UNUserNotificationCenter
+
+- (void)requestAuthorizationWithOptions:(UNAuthorizationOptions)options completionHandler:(void (^)(BOOL granted, NSError *error))completionHandler {
+    if (is_tweak_active()) {
+        logAudit(@"TCC-NOTIF", [NSString stringWithFormat:@"🔔 Zalo yêu cầu cấp quyền Thông Báo (requestAuthorizationWithOptions: 0x%lx) -> [Kích hoạt dialog Apple thật]", (unsigned long)options]);
+        void (^wrappedHandler)(BOOL, NSError *) = ^(BOOL granted, NSError *error) {
+            if (granted) {
+                ZTSettings *s = [ZTSettings sharedSettings];
+                s.notificationPermissionDetermined = YES;
+                [s saveSettings];
+                logAudit(@"TCC-NOTIF", @"✅ Người dùng đã bấm Cho phép thông báo -> Kích hoạt đăng ký APNs thật với Apple Gateway...");
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [[UIApplication sharedApplication] registerForRemoteNotifications];
+                });
+            }
+            if (completionHandler) {
+                completionHandler(granted, error);
+            }
+        };
+        %orig(options, wrappedHandler);
+        return;
+    }
+    %orig(options, completionHandler);
+}
+
+%end
+
 @interface INVocabulary : NSObject
 @end
 
@@ -3062,6 +3114,10 @@ static BOOL is_jailbreak_path(const char *path) {
         "/Applications/Zebra.app",
         "/Applications/Cydia.app",
         "/Applications/Filza.app",
+        "/Applications/TrollStore.app",
+        "/Applications/NewTerm.app",
+        "/Applications/Santander.app",
+        "/Applications/checkra1n.app",
         "/usr/sbin/sshd",
         "/usr/bin/ssh",
         "/bin/sh",
@@ -3070,10 +3126,15 @@ static BOOL is_jailbreak_path(const char *path) {
         "/private/var/lib/apt",
         "/private/var/stash",
         "/var/jb",
+        "/var/bin",
+        "/var/dropbear",
+        "/var/checkra1n",
         "/var/lib/apt",
         "/var/lib/dpkg",
         "/var/log/dpkg",
         "/Library/MobileSubstrate",
+        "/Library/PreferenceLoader",
+        "/Library/PreferenceBundles",
         "/private/preboot",
         "MobileSubstrate.dylib",
         "cydia_substitute",
@@ -3083,6 +3144,14 @@ static BOOL is_jailbreak_path(const char *path) {
         "libhooker",
         "test_jb",
         "jailbreak.txt",
+        "TrollStore",
+        ".jbroot",
+        "jbroot",
+        "FridaGadget",
+        "frida-server",
+        "Choicy.dylib",
+        "Shadow.dylib",
+        "Zalotweak.dylib",
         NULL
     };
     for (int i = 0; jb_indicators[i] != NULL; i++) {
@@ -3140,6 +3209,49 @@ static pid_t my_fork(void) {
     }
     errno = ENOSYS;
     return -1;
+}
+
+static int (*orig_system)(const char *command);
+static int my_system(const char *command) {
+    if (is_tweak_active()) {
+        void *c0 = __builtin_return_address(0);
+        if (is_zalo_caller(c0)) {
+            logAudit(@"RADAR-SECURITY", [NSString stringWithFormat:@"🛡️ Zalo gọi system('%s') -> [CHẶN THỰC THI SHELL SANDBOX]", command ? command : ""]);
+            errno = EPERM;
+            return -1;
+        }
+    }
+    return orig_system ? orig_system(command) : system(command);
+}
+
+static FILE *(*orig_popen)(const char *command, const char *type);
+static FILE *my_popen(const char *command, const char *type) {
+    if (is_tweak_active()) {
+        void *c0 = __builtin_return_address(0);
+        if (is_zalo_caller(c0)) {
+            logAudit(@"RADAR-SECURITY", [NSString stringWithFormat:@"🛡️ Zalo gọi popen('%s') -> [CHẶN THỰC THI SHELL SANDBOX]", command ? command : ""]);
+            errno = EPERM;
+            return NULL;
+        }
+    }
+    return orig_popen ? orig_popen(command, type) : popen(command, type);
+}
+
+static char *(*orig_getenv)(const char *name);
+static char *my_getenv(const char *name) {
+    if (name && is_tweak_active()) {
+        if (strcmp(name, "DYLD_INSERT_LIBRARIES") == 0 ||
+            strcmp(name, "DYLD_LIBRARY_PATH") == 0 ||
+            strcmp(name, "_MSSafeMode") == 0 ||
+            strcmp(name, "SHELL") == 0) {
+            void *c0 = __builtin_return_address(0);
+            if (is_zalo_caller(c0)) {
+                logAudit(@"RADAR-SECURITY", [NSString stringWithFormat:@"🛡️ Zalo truy vấn getenv('%s') -> [ẨN BIẾN MÔI TRƯỜNG JAILBREAK: TRẢ VỀ NULL]", name]);
+                return NULL;
+            }
+        }
+    }
+    return orig_getenv ? orig_getenv(name) : getenv(name);
 }
 
 // Ẩn BSSID của trạm phát WiFi (tránh phát hiện chung router)
@@ -3201,6 +3313,40 @@ static int my_getifaddrs(struct ifaddrs **ifap) {
 
 __attribute__((visibility("default"))) int zt_get_masked_ifaddrs(struct ifaddrs **ifap) {
     return my_getifaddrs(ifap);
+}
+
+// ==========================================
+// HOOK PROXY CFNETWORK: Ẩn cấu hình Proxy của Wi-Fi đối với Zalo
+// Giúp bảo vệ máy khi người dùng cấu hình Proxy Wi-Fi (Charles, Mitmproxy...)
+// ==========================================
+static CFDictionaryRef (*orig_CFNetworkCopySystemProxySettings)(void);
+static CFDictionaryRef my_CFNetworkCopySystemProxySettings(void) {
+    if (is_tweak_active()) {
+        void *c0 = __builtin_return_address(0);
+        if (is_zalo_caller(c0)) {
+            logAudit(@"PROXY-HIDE", @"🛡️ Zalo gọi CFNetworkCopySystemProxySettings -> [ẨN PROXY: TRẢ VỀ RỖNG]");
+            return CFDictionaryCreate(kCFAllocatorDefault, NULL, NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        }
+    }
+    return orig_CFNetworkCopySystemProxySettings ? orig_CFNetworkCopySystemProxySettings() : CFNetworkCopySystemProxySettings();
+}
+
+static CFArrayRef (*orig_CFNetworkCopyProxiesForURL)(CFURLRef url, CFDictionaryRef proxySettings);
+static CFArrayRef my_CFNetworkCopyProxiesForURL(CFURLRef url, CFDictionaryRef proxySettings) {
+    if (is_tweak_active()) {
+        void *c0 = __builtin_return_address(0);
+        if (is_zalo_caller(c0)) {
+            logAudit(@"PROXY-HIDE", @"🛡️ Zalo gọi CFNetworkCopyProxiesForURL -> [ẨN PROXY: TRẢ VỀ KẾT NỐI TRỰC TIẾP (DIRECT)]");
+            CFStringRef keys[] = { kCFProxyTypeKey };
+            CFTypeRef values[] = { kCFProxyTypeNone };
+            CFDictionaryRef directDict = CFDictionaryCreate(kCFAllocatorDefault, (const void **)keys, (const void **)values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+            const void *arrValues[] = { directDict };
+            CFArrayRef result = CFArrayCreate(kCFAllocatorDefault, arrValues, 1, &kCFTypeArrayCallBacks);
+            if (directDict) CFRelease(directDict);
+            return result;
+        }
+    }
+    return orig_CFNetworkCopyProxiesForURL ? orig_CFNetworkCopyProxiesForURL(url, proxySettings) : CFNetworkCopyProxiesForURL(url, proxySettings);
 }
 
 
@@ -3378,29 +3524,42 @@ static inline BOOL should_fake_stat_path(const char *path) {
 static inline uint64_t get_effective_birth_for_path(const char *path, uint64_t base_birth) {
     if (!path || base_birth == 0) return base_birth;
     ZTSettings *s = [ZTSettings sharedSettings];
-    uint64_t d_var = s.deltaVarSec > 0 ? (uint64_t)s.deltaVarSec : (180ULL + ((base_birth * 65537ULL) % 900ULL));
-    uint64_t d_mob = (s.deltaMobileSec > d_var) ? (uint64_t)s.deltaMobileSec : (d_var + 25ULL + ((base_birth * 104729ULL) % 120ULL));
+
+    // Căn chỉnh chuỗi mốc thời gian tăng dần tự nhiên:
+    // Path 1 (/var) < Path 2 (/) < Path 3 (/etc) < Path 4 (/var/mobile) < Path 5 (Sandbox) < Path 6 (Library/Caches)
+    // Đảm bảo t1 < t2 < t3 trong device_id của Zalo Centralized SDK!
+    uint64_t d_root = 120ULL + ((base_birth * 65537ULL) % 180ULL);
+    uint64_t d_etc = d_root + 35ULL + ((base_birth * 104729ULL) % 120ULL);
+    uint64_t d_mob = d_etc + 60ULL + ((base_birth * 31ULL) % 120ULL);
     uint64_t d_sbx = (s.deltaSandboxSec > d_mob) ? (uint64_t)s.deltaSandboxSec : (d_mob + 86400ULL * 7ULL + ((base_birth * 1299709ULL) % (86400ULL * 60ULL)));
     uint64_t d_lib = d_sbx + 2ULL + ((base_birth * 2246822519ULL) % 15ULL);
+
+    // Bịt kín kẽ hở thời gian tương lai: Đảm bảo toàn bộ mốc thời gian thư mục luôn diễn ra TRƯỚC thời điểm hiện tại
+    struct timeval curTv;
+    gettimeofday(&curTv, NULL);
+    uint64_t nowSec = (uint64_t)curTv.tv_sec;
+    if (nowSec > base_birth + 600ULL) {
+        uint64_t max_span = nowSec - base_birth - 300ULL;
+        if (d_lib >= max_span) {
+            uint64_t step = max_span / 6ULL;
+            if (step >= 10ULL) {
+                d_root = step;
+                d_etc = step * 2ULL;
+                d_mob = step * 3ULL;
+                d_sbx = step * 4ULL + (base_birth % step);
+                d_lib = step * 5ULL + ((base_birth * 31ULL) % step);
+            } else {
+                d_sbx = (max_span > 60ULL) ? (max_span - 60ULL) : (max_span / 2ULL);
+                d_lib = (max_span > 10ULL) ? (max_span - 10ULL) : max_span;
+            }
+        }
+    }
 
     const char *p = path;
     if (strncmp(p, "/private/", 9) == 0) {
         p += 8; // Chuẩn hóa "/private/var/..." -> "/var/..."
     } else if (strcmp(p, "/private") == 0) {
-        return base_birth;
-    }
-
-    // Tier 0: Phân vùng hệ thống RootFS read-only ("/", "/System/...", "/usr/...", "/bin/...", "/sbin/...", "/etc/...", "/Library/...")
-    // Phải kiểm tra TRƯỚC Tier 4 để "/System/Library/..." không bị nhận nhầm là thư mục Library trong Sandbox của App!
-    if (strcmp(p, "/") == 0 ||
-        strncmp(p, "/System", 7) == 0 ||
-        strncmp(p, "/usr", 4) == 0 ||
-        strncmp(p, "/bin", 4) == 0 ||
-        strncmp(p, "/sbin", 5) == 0 ||
-        strncmp(p, "/etc", 4) == 0 ||
-        strncmp(p, "/Library", 8) == 0 ||
-        strncmp(p, "/Developer", 10) == 0) {
-        return base_birth;
+        return base_birth + d_root;
     }
 
     // Tier 4: Thư mục con cấu hình/cache trong Sandbox (Library, Caches, Preferences, tmp)
@@ -3429,12 +3588,28 @@ static inline uint64_t get_effective_birth_for_path(const char *path, uint64_t b
         for (const char *c = p + 5; *c; ++c) {
             if (*c != '/') h = h * 131ULL + (unsigned char)(*c);
         }
-        return base_birth + d_var + 3ULL + (h % 20ULL);
+        return base_birth + 3ULL + (h % 20ULL);
     }
-    // Tier 1: /var
+    // Tier 1: /var (Mốc 1 trong chuỗi device_id của Zalo: t1)
     if (strcmp(p, "/var") == 0 || strcmp(p, "/var/") == 0) {
-        return base_birth + d_var;
+        return base_birth;
     }
+
+    // Tier 0b: System Configuration Files ("/etc", "/private/etc", "/etc/passwd", ...) (Mốc 3: t3 > t2)
+    if (strncmp(p, "/etc", 4) == 0 || strncmp(p, "/private/etc", 12) == 0) {
+        return base_birth + d_etc;
+    }
+
+    // Tier 0: Phân vùng hệ thống RootFS read-only ("/", "/System/...", "/usr/...", "/bin/...", "/sbin/...") (Mốc 2: t2 > t1)
+    if (strcmp(p, "/") == 0 ||
+        strncmp(p, "/System", 7) == 0 ||
+        strncmp(p, "/usr", 4) == 0 ||
+        strncmp(p, "/bin", 4) == 0 ||
+        strncmp(p, "/sbin", 5) == 0 ||
+        strncmp(p, "/Developer", 10) == 0) {
+        return base_birth + d_root;
+    }
+
     return base_birth;
 }
 
@@ -3480,14 +3655,45 @@ static void log_stat_path_once(const char *api, const char *path, uint64_t eff_b
     s_in_stat_log = NO;
 }
 
+static inline void get_consistent_stat_times_for_path(const char *path, uint64_t fake_birth, time_t *out_mtime, time_t *out_ctime, long *out_nsec_b, long *out_nsec_m, long *out_nsec_c) {
+    uint64_t phash = 5381ULL;
+    if (path) {
+        for (const char *c = path; *c; ++c) {
+            phash = ((phash << 5) + phash) + (unsigned char)(*c);
+        }
+    }
+    uint64_t seed = fake_birth ^ phash;
+    uint64_t delta_m = 180ULL + ((seed * 104729ULL) % 1800ULL) + (seed % 59ULL);
+    uint64_t delta_c = delta_m + 30ULL + ((seed * 1299709ULL) % 600ULL) + ((seed / 13ULL) % 43ULL);
+
+    uint64_t calc_mtime = fake_birth + delta_m;
+    uint64_t calc_ctime = fake_birth + delta_c;
+
+    // Bịt kín kẽ hở POSIX: Bảo đảm fake_birth <= mtime <= ctime < nowSec
+    struct timeval curTv;
+    gettimeofday(&curTv, NULL);
+    uint64_t nowSec = (uint64_t)curTv.tv_sec;
+    if (nowSec > fake_birth) {
+        if (calc_ctime >= nowSec) {
+            calc_ctime = nowSec - (5ULL + (seed % 10ULL));
+            if (calc_mtime >= calc_ctime) {
+                calc_mtime = (calc_ctime > fake_birth + 10ULL) ? (calc_ctime - (5ULL + ((seed / 7ULL) % 15ULL))) : fake_birth;
+            }
+        } else if (calc_mtime >= nowSec) {
+            calc_mtime = nowSec - (15ULL + (seed % 15ULL));
+        }
+    }
+
+    if (out_mtime) *out_mtime = (time_t)calc_mtime;
+    if (out_ctime) *out_ctime = (time_t)calc_ctime;
+    if (out_nsec_b) *out_nsec_b = (long)(((seed * 2654435761ULL) % 850ULL + 100ULL) * 1000000L);
+    if (out_nsec_m) *out_nsec_m = (long)((((seed + delta_m) * 2654435761ULL) % 850ULL + 100ULL) * 1000000L);
+    if (out_nsec_c) *out_nsec_c = (long)((((seed + delta_c) * 2654435761ULL) % 850ULL + 100ULL) * 1000000L);
+}
+
+// Wrapper tương thích ngược cho NSURL và NSFileManager
 static inline void get_consistent_stat_times(uint64_t fake_birth, time_t *out_mtime, time_t *out_ctime, long *out_nsec_b, long *out_nsec_m, long *out_nsec_c) {
-    uint64_t delta_m = 180ULL + ((fake_birth * 104729ULL) % 1800ULL) + (fake_birth % 59ULL);
-    uint64_t delta_c = delta_m + 30ULL + ((fake_birth * 1299709ULL) % 600ULL) + ((fake_birth / 13ULL) % 43ULL);
-    if (out_mtime) *out_mtime = (time_t)(fake_birth + delta_m);
-    if (out_ctime) *out_ctime = (time_t)(fake_birth + delta_c);
-    if (out_nsec_b) *out_nsec_b = (long)(((fake_birth * 2654435761ULL) % 850ULL + 100ULL) * 1000000L);
-    if (out_nsec_m) *out_nsec_m = (long)((((fake_birth + delta_m) * 2654435761ULL) % 850ULL + 100ULL) * 1000000L);
-    if (out_nsec_c) *out_nsec_c = (long)((((fake_birth + delta_c) * 2654435761ULL) % 850ULL + 100ULL) * 1000000L);
+    get_consistent_stat_times_for_path(NULL, fake_birth, out_mtime, out_ctime, out_nsec_b, out_nsec_m, out_nsec_c);
 }
 
 static inline void fake_stat_timespec_for_path(const char *path, struct stat *buf, uint64_t btime) {
@@ -3497,7 +3703,7 @@ static inline void fake_stat_timespec_for_path(const char *path, struct stat *bu
     time_t fake_birth = (time_t)get_effective_birth_for_path(path, base_birth);
     time_t fake_mtime = 0, fake_ctime = 0;
     long nsec_birth = 0, nsec_mtime = 0, nsec_ctime = 0;
-    get_consistent_stat_times((uint64_t)fake_birth, &fake_mtime, &fake_ctime, &nsec_birth, &nsec_mtime, &nsec_ctime);
+    get_consistent_stat_times_for_path(path, (uint64_t)fake_birth, &fake_mtime, &fake_ctime, &nsec_birth, &nsec_mtime, &nsec_ctime);
     buf->st_birthtimespec.tv_sec = fake_birth;
     buf->st_birthtimespec.tv_nsec = nsec_birth;
     buf->st_mtimespec.tv_sec = fake_mtime;
@@ -3585,6 +3791,14 @@ static int my_fstat(int fd, struct stat *buf) {
 
 static int (*orig_getattrlist)(const char *path, struct attrlist *attrList, void *attrBuf, size_t attrBufSize, unsigned int options);
 static int my_getattrlist(const char *path, struct attrlist *attrList, void *attrBuf, size_t attrBufSize, unsigned int options) {
+    if (is_tweak_active() && path && is_jailbreak_path(path)) {
+        void *c0 = __builtin_return_address(0);
+        if (is_zalo_caller(c0)) {
+            logAudit(@"JB-FILE-CHECK", [NSString stringWithFormat:@"Zalo gọi getattrlist('%s') -> [ĐÃ ẨN - TRẢ VỀ ENOENT]", path]);
+        }
+        errno = ENOENT;
+        return -1;
+    }
     int ret = orig_getattrlist ? orig_getattrlist(path, attrList, attrBuf, attrBufSize, options) : getattrlist(path, attrList, attrBuf, attrBufSize, options);
     if (ret == 0 && is_tweak_active() && attrList && attrBuf && path) {
         if (should_fake_stat_path(path) && (attrList->commonattr & (ATTR_CMN_CRTIME | ATTR_CMN_MODTIME | ATTR_CMN_CHGTIME | ATTR_CMN_ACCTIME))) {
@@ -3593,7 +3807,7 @@ static int my_getattrlist(const char *path, struct attrlist *attrList, void *att
             uint64_t effBirth = get_effective_birth_for_path(path, baseBirth);
             time_t fake_mtime = 0, fake_ctime = 0;
             long nsec_b = 0, nsec_m = 0, nsec_c = 0;
-            get_consistent_stat_times(effBirth, &fake_mtime, &fake_ctime, &nsec_b, &nsec_m, &nsec_c);
+            get_consistent_stat_times_for_path(path, effBirth, &fake_mtime, &fake_ctime, &nsec_b, &nsec_m, &nsec_c);
             log_stat_path_once("getattrlist", path, effBirth, nsec_b);
             size_t words32 = attrBufSize / sizeof(uint32_t);
             uint32_t *ptr32 = (uint32_t *)attrBuf;
@@ -3917,6 +4131,14 @@ static inline BOOL is_sideload_provision_path(NSString *path) {
 }
 
 - (NSDictionary<NSFileAttributeKey, id> *)attributesOfItemAtPath:(NSString *)path error:(NSError **)error {
+    if (is_tweak_active() && path && is_jailbreak_path([path UTF8String])) {
+        void *c0 = __builtin_return_address(0);
+        if (is_zalo_caller(c0)) {
+            logAudit(@"JB-FILE-CHECK", [NSString stringWithFormat:@"Zalo gọi attributesOfItemAtPath:'%@' -> [ĐÃ ẨN - TRẢ VỀ NIL]", path]);
+        }
+        if (error) *error = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileReadNoSuchFileError userInfo:nil];
+        return nil;
+    }
     NSDictionary *attrs = %orig;
     if (is_tweak_active() && attrs && path) {
         NSString *lower = [path lowercaseString];
@@ -3942,7 +4164,7 @@ static inline BOOL is_sideload_provision_path(NSString *path) {
                 uint64_t fake_birth = get_effective_birth_for_path([path UTF8String], base_birth);
                 time_t fake_mtime = 0, fake_ctime = 0;
                 long nsec_b = 0, nsec_m = 0, nsec_c = 0;
-                get_consistent_stat_times(fake_birth, &fake_mtime, &fake_ctime, &nsec_b, &nsec_m, &nsec_c);
+                get_consistent_stat_times_for_path([path UTF8String], fake_birth, &fake_mtime, &fake_ctime, &nsec_b, &nsec_m, &nsec_c);
                 log_stat_path_once("NSFileManager", [path UTF8String], fake_birth, nsec_b);
                 NSDate *fakeDate = [NSDate dateWithTimeIntervalSince1970:((NSTimeInterval)fake_birth + (NSTimeInterval)nsec_b / 1000000000.0)];
                 NSDate *fakeModDate = [NSDate dateWithTimeIntervalSince1970:((NSTimeInterval)fake_mtime + (NSTimeInterval)nsec_m / 1000000000.0)];
@@ -3971,7 +4193,15 @@ static inline BOOL is_sideload_provision_path(NSString *path) {
                         [itemLower containsString:@"zebra"] ||
                         [itemLower containsString:@"filza"] ||
                         [itemLower containsString:@"substitute"] ||
-                        [itemLower containsString:@"ellekit"]) {
+                        [itemLower containsString:@"ellekit"] ||
+                        [itemLower containsString:@"trollstore"] ||
+                        [itemLower containsString:@"newterm"] ||
+                        [itemLower containsString:@"santander"] ||
+                        [itemLower containsString:@"checkra1n"] ||
+                        [itemLower containsString:@"dropbear"] ||
+                        [itemLower containsString:@"roothide"] ||
+                        [itemLower containsString:@"dopamine"] ||
+                        [itemLower containsString:@"palera1n"]) {
                         continue;
                     }
                     [filtered addObject:item];
@@ -4006,7 +4236,15 @@ static inline BOOL is_sideload_provision_path(NSString *path) {
                         [uLower containsString:@"zebra"] ||
                         [uLower containsString:@"filza"] ||
                         [uLower containsString:@"substitute"] ||
-                        [uLower containsString:@"ellekit"]) {
+                        [uLower containsString:@"ellekit"] ||
+                        [uLower containsString:@"trollstore"] ||
+                        [uLower containsString:@"newterm"] ||
+                        [uLower containsString:@"santander"] ||
+                        [uLower containsString:@"checkra1n"] ||
+                        [uLower containsString:@"dropbear"] ||
+                        [uLower containsString:@"roothide"] ||
+                        [uLower containsString:@"dopamine"] ||
+                        [uLower containsString:@"palera1n"]) {
                         continue;
                     }
                     [filtered addObject:u];
@@ -4056,7 +4294,7 @@ static inline BOOL is_sideload_provision_path(NSString *path) {
                 uint64_t fake_birth = get_effective_birth_for_path(urlPath ? [urlPath UTF8String] : NULL, base_birth);
                 time_t fake_mtime = 0, fake_ctime = 0;
                 long nsec_b = 0, nsec_m = 0, nsec_c = 0;
-                get_consistent_stat_times(fake_birth, &fake_mtime, &fake_ctime, &nsec_b, &nsec_m, &nsec_c);
+                get_consistent_stat_times_for_path(urlPath ? [urlPath UTF8String] : NULL, fake_birth, &fake_mtime, &fake_ctime, &nsec_b, &nsec_m, &nsec_c);
                 if ([key isEqualToString:NSURLCreationDateKey]) {
                     if (urlPath) log_stat_path_once("NSURL.getResourceValue", [urlPath UTF8String], fake_birth, nsec_b);
                     *value = [NSDate dateWithTimeIntervalSince1970:((NSTimeInterval)fake_birth + (NSTimeInterval)nsec_b / 1000000000.0)];
@@ -4104,7 +4342,7 @@ static inline BOOL is_sideload_provision_path(NSString *path) {
             uint64_t fake_birth = get_effective_birth_for_path(urlPath ? [urlPath UTF8String] : NULL, base_birth);
             time_t fake_mtime = 0, fake_ctime = 0;
             long nsec_b = 0, nsec_m = 0, nsec_c = 0;
-            get_consistent_stat_times(fake_birth, &fake_mtime, &fake_ctime, &nsec_b, &nsec_m, &nsec_c);
+            get_consistent_stat_times_for_path(urlPath ? [urlPath UTF8String] : NULL, fake_birth, &fake_mtime, &fake_ctime, &nsec_b, &nsec_m, &nsec_c);
             if ([keys containsObject:NSURLCreationDateKey]) {
                 if (urlPath) log_stat_path_once("NSURL.resourceValues", [urlPath UTF8String], fake_birth, nsec_b);
                 m[NSURLCreationDateKey] = [NSDate dateWithTimeIntervalSince1970:((NSTimeInterval)fake_birth + (NSTimeInterval)nsec_b / 1000000000.0)];
@@ -4122,6 +4360,19 @@ static inline BOOL is_sideload_provision_path(NSString *path) {
         if (changed) return m;
     }
     return values;
+}
+
+- (BOOL)checkResourceIsReachableAndReturnError:(NSError **)error {
+    if (is_tweak_active() && [self isFileURL]) {
+        NSString *p = [self path];
+        if (p && is_jailbreak_path([p UTF8String])) {
+            if (error) {
+                *error = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileReadNoSuchFileError userInfo:@{NSFilePathErrorKey: p}];
+            }
+            return NO;
+        }
+    }
+    return %orig;
 }
 
 %end
@@ -4404,6 +4655,10 @@ static NSData *get_or_create_spoofed_voip_token_data(void) {
             [scheme isEqualToString:@"filza"] ||
             [scheme isEqualToString:@"santander"] ||
             [scheme isEqualToString:@"apt"] ||
+            [scheme isEqualToString:@"trollstore"] ||
+            [scheme isEqualToString:@"newterm"] ||
+            [scheme isEqualToString:@"dropbear"] ||
+            [scheme isEqualToString:@"ssh"] ||
             [scheme isEqualToString:@"undecimus"]) {
             logAudit(@"SCHEME-CHECK", [NSString stringWithFormat:@"canOpenURL('%@') -> [ĐÃ CHẶN JAILBREAK - TRẢ VỀ NO]", [url absoluteString]]);
             return NO;
@@ -5539,6 +5794,9 @@ static void zt_early_keychain_purge_if_needed(void) {
         universal_hook_c_function("readlink", (void *)readlink, (void *)my_readlink, (void **)&orig_readlink);
         universal_hook_c_function("readlinkat", (void *)readlinkat, (void *)my_readlinkat, (void **)&orig_readlinkat);
         universal_hook_c_function("fork", (void *)fork, (void *)my_fork, (void **)&orig_fork);
+        universal_hook_c_function("system", (void *)system, (void *)my_system, (void **)&orig_system);
+        universal_hook_c_function("popen", (void *)popen, (void *)my_popen, (void **)&orig_popen);
+        universal_hook_c_function("getenv", (void *)getenv, (void *)my_getenv, (void **)&orig_getenv);
         universal_hook_c_function("stat", (void *)stat, (void *)my_stat, (void **)&orig_stat);
         universal_hook_c_function("lstat", (void *)lstat, (void *)my_lstat, (void **)&orig_lstat);
         universal_hook_c_function("fstat", (void *)fstat, (void *)my_fstat, (void **)&orig_fstat);
@@ -5555,11 +5813,14 @@ static void zt_early_keychain_purge_if_needed(void) {
                 { "readlink", (void *)my_readlink, (void **)&orig_readlink },
                 { "readlinkat", (void *)my_readlinkat, (void **)&orig_readlinkat },
                 { "fork", (void *)my_fork, (void **)&orig_fork },
+                { "system", (void *)my_system, (void **)&orig_system },
+                { "popen", (void *)my_popen, (void **)&orig_popen },
+                { "getenv", (void *)my_getenv, (void **)&orig_getenv },
                 { "uname", (void *)my_uname, (void **)&orig_uname },
                 { "sysctl", (void *)my_sysctl, (void **)&orig_sysctl },
                 { "sysctlbyname", (void *)my_sysctlbyname, (void **)&orig_sysctlbyname }
             };
-            rebind_symbols(inode64_rebs, 13);
+            rebind_symbols(inode64_rebs, sizeof(inode64_rebs) / sizeof(struct rebinding));
         }
         void *cdFunc = dlsym(RTLD_DEFAULT, "CacheDeleteCopyAvailableSpaceForVolume");
         if (cdFunc) {
@@ -5580,6 +5841,16 @@ static void zt_early_keychain_purge_if_needed(void) {
         void *cnFunc = (void *)CNCopyCurrentNetworkInfo;
         if (cnFunc) {
             universal_hook_c_function("CNCopyCurrentNetworkInfo", cnFunc, (void *)my_CNCopyCurrentNetworkInfo, (void **)&orig_CNCopyCurrentNetworkInfo);
+        }
+
+        // Hook CFNetwork Proxy Anonymization (Ẩn cài đặt Proxy Wi-Fi)
+        void *proxySettingsFunc = (void *)CFNetworkCopySystemProxySettings;
+        if (proxySettingsFunc) {
+            universal_hook_c_function("CFNetworkCopySystemProxySettings", proxySettingsFunc, (void *)my_CFNetworkCopySystemProxySettings, (void **)&orig_CFNetworkCopySystemProxySettings);
+        }
+        void *proxiesForURLFunc = (void *)CFNetworkCopyProxiesForURL;
+        if (proxiesForURLFunc) {
+            universal_hook_c_function("CFNetworkCopyProxiesForURL", proxiesForURLFunc, (void *)my_CFNetworkCopyProxiesForURL, (void **)&orig_CFNetworkCopyProxiesForURL);
         }
 
         // Hook getifaddrs (Lọc bỏ interface VPN, tap, tun, utun)

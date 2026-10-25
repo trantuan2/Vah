@@ -15,7 +15,7 @@ Zalotweak_CFLAGS += -DTHEOS_PACKAGE_SCHEME_ROOTHIDE=1
 endif
 Zalotweak_LDFLAGS = -Wl,-dead_strip -Wl,-x -Wl,-S
 Zalotweak_LIBRARIES = z
-Zalotweak_FRAMEWORKS = UIKit Foundation Security SystemConfiguration AdSupport AppTrackingTransparency CoreTelephony Intents CFNetwork
+Zalotweak_FRAMEWORKS = UIKit Foundation Security SystemConfiguration AdSupport AppTrackingTransparency CoreTelephony Intents CFNetwork UserNotifications
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
