@@ -3145,8 +3145,6 @@ static BOOL is_jailbreak_path(const char *path) {
         "test_jb",
         "jailbreak.txt",
         "TrollStore",
-        ".jbroot",
-        "jbroot",
         "FridaGadget",
         "frida-server",
         "Choicy.dylib",
@@ -3720,9 +3718,12 @@ static int my_stat(const char *path, struct stat *buf) {
     s_in_stat = YES;
 
     if (is_tweak_active() && path && is_jailbreak_path(path)) {
-        s_in_stat = NO;
-        errno = ENOENT;
-        return -1;
+        void *c0 = __builtin_return_address(0);
+        if (is_zalo_caller(c0)) {
+            s_in_stat = NO;
+            errno = ENOENT;
+            return -1;
+        }
     }
 
     int ret = orig_stat ? orig_stat(path, buf) : stat(path, buf);
@@ -3745,9 +3746,12 @@ static int my_lstat(const char *path, struct stat *buf) {
     s_in_lstat = YES;
 
     if (is_tweak_active() && path && is_jailbreak_path(path)) {
-        s_in_lstat = NO;
-        errno = ENOENT;
-        return -1;
+        void *c0 = __builtin_return_address(0);
+        if (is_zalo_caller(c0)) {
+            s_in_lstat = NO;
+            errno = ENOENT;
+            return -1;
+        }
     }
 
     int ret = orig_lstat ? orig_lstat(path, buf) : lstat(path, buf);
@@ -3978,8 +3982,11 @@ static int my_open(const char *path, int oflag, ...) {
     }
 
     if (is_tweak_active() && path && is_jailbreak_path(path)) {
-        errno = ENOENT;
-        return -1;
+        void *c0 = __builtin_return_address(0);
+        if (is_zalo_caller(c0)) {
+            errno = ENOENT;
+            return -1;
+        }
     }
 
     return orig_open ? orig_open(path, oflag, mode) : open(path, oflag, mode);
@@ -3996,8 +4003,11 @@ static int my_openat(int fd, const char *path, int oflag, ...) {
     }
 
     if (is_tweak_active() && path && is_jailbreak_path(path)) {
-        errno = ENOENT;
-        return -1;
+        void *c0 = __builtin_return_address(0);
+        if (is_zalo_caller(c0)) {
+            errno = ENOENT;
+            return -1;
+        }
     }
 
     return orig_openat ? orig_openat(fd, path, oflag, mode) : openat(fd, path, oflag, mode);
@@ -4366,10 +4376,13 @@ static inline BOOL is_sideload_provision_path(NSString *path) {
     if (is_tweak_active() && [self isFileURL]) {
         NSString *p = [self path];
         if (p && is_jailbreak_path([p UTF8String])) {
-            if (error) {
-                *error = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileReadNoSuchFileError userInfo:@{NSFilePathErrorKey: p}];
+            void *c0 = __builtin_return_address(0);
+            if (is_zalo_caller(c0)) {
+                if (error) {
+                    *error = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileReadNoSuchFileError userInfo:@{NSFilePathErrorKey: p}];
+                }
+                return NO;
             }
-            return NO;
         }
     }
     return %orig;
