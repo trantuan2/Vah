@@ -2744,59 +2744,72 @@ static int my_clock_gettime(clockid_t clk_id, struct timespec *tp) {
 }
 
 static int64_t s_mach_cont_offset = 0;
-static uint64_t s_last_cont_boot_sec = 0;
-static BOOL s_last_cont_enabled = NO;
+static int64_t s_mach_abs_offset = 0;
+static uint64_t s_last_mach_boot_sec = 0;
+static BOOL s_last_mach_enabled = NO;
+static __thread BOOL s_in_mach_hook = NO;
 
 static uint64_t (*orig_mach_continuous_time)(void);
+static uint64_t (*orig_mach_absolute_time)(void);
+
+static void update_mach_clock_offsets(void) {
+    if (s_in_mach_hook) return;
+    s_in_mach_hook = YES;
+
+    ZTSettings *s = [ZTSettings sharedSettings];
+    double contSec = 0.0, awakeSec = 0.0;
+    get_consistent_uptimes(&contSec, &awakeSec);
+
+    uint64_t targetContTicks = seconds_to_mach_ticks(contSec);
+    uint64_t targetAbsTicks = seconds_to_mach_ticks(awakeSec);
+
+    uint64_t realCont = orig_mach_continuous_time ? orig_mach_continuous_time() : mach_continuous_time();
+    uint64_t realAbs = orig_mach_absolute_time ? orig_mach_absolute_time() : mach_absolute_time();
+
+    s_mach_cont_offset = (int64_t)targetContTicks - (int64_t)realCont;
+    s_mach_abs_offset = (int64_t)targetAbsTicks - (int64_t)realAbs;
+    s_last_mach_boot_sec = s.bootTimeSec;
+    s_last_mach_enabled = s.spoofContinuousCPUClock;
+
+    s_in_mach_hook = NO;
+}
+
 static uint64_t my_mach_continuous_time(void) {
     uint64_t realTicks = orig_mach_continuous_time ? orig_mach_continuous_time() : mach_continuous_time();
-    if (!is_tweak_active()) {
+    if (!is_tweak_active() || s_in_mach_hook) {
         return realTicks;
     }
     ZTSettings *s = [ZTSettings sharedSettings];
     if (s.spoofContinuousCPUClock && s.bootTimeSec > 0) {
-        if (s_mach_cont_offset == 0 || s_last_cont_boot_sec != s.bootTimeSec || s_last_cont_enabled != s.spoofContinuousCPUClock) {
-            double contSec = 0.0;
-            get_consistent_uptimes(&contSec, NULL);
-            uint64_t targetTicks = seconds_to_mach_ticks(contSec);
-            s_mach_cont_offset = (int64_t)targetTicks - (int64_t)realTicks;
-            s_last_cont_boot_sec = s.bootTimeSec;
-            s_last_cont_enabled = s.spoofContinuousCPUClock;
+        if (s_mach_cont_offset == 0 || s_last_mach_boot_sec != s.bootTimeSec || s_last_mach_enabled != s.spoofContinuousCPUClock) {
+            update_mach_clock_offsets();
         }
         return (uint64_t)((int64_t)realTicks + s_mach_cont_offset);
     }
-    s_last_cont_enabled = s.spoofContinuousCPUClock;
+    s_last_mach_enabled = s.spoofContinuousCPUClock;
     return realTicks;
 }
 
-static int64_t s_mach_abs_offset = 0;
-static uint64_t s_last_abs_boot_sec = 0;
-static BOOL s_last_abs_enabled = NO;
-
-static uint64_t (*orig_mach_absolute_time)(void);
 static uint64_t my_mach_absolute_time(void) {
     uint64_t realTicks = orig_mach_absolute_time ? orig_mach_absolute_time() : mach_absolute_time();
-    if (!is_tweak_active()) {
+    if (!is_tweak_active() || s_in_mach_hook) {
         return realTicks;
     }
     ZTSettings *s = [ZTSettings sharedSettings];
     if (s.spoofContinuousCPUClock && s.bootTimeSec > 0) {
-        if (s_mach_abs_offset == 0 || s_last_abs_boot_sec != s.bootTimeSec || s_last_abs_enabled != s.spoofContinuousCPUClock) {
-            double awakeSec = 0.0;
-            get_consistent_uptimes(NULL, &awakeSec);
-            uint64_t targetTicks = seconds_to_mach_ticks(awakeSec);
-            s_mach_abs_offset = (int64_t)targetTicks - (int64_t)realTicks;
-            s_last_abs_boot_sec = s.bootTimeSec;
-            s_last_abs_enabled = s.spoofContinuousCPUClock;
+        if (s_mach_abs_offset == 0 || s_last_mach_boot_sec != s.bootTimeSec || s_last_mach_enabled != s.spoofContinuousCPUClock) {
+            update_mach_clock_offsets();
         }
         uint64_t absVal = (uint64_t)((int64_t)realTicks + s_mach_abs_offset);
-        uint64_t contVal = my_mach_continuous_time();
+        // Đảm bảo bất biến Apple Darwin Kernel: mach_continuous_time() >= mach_absolute_time()
+        uint64_t realCont = orig_mach_continuous_time ? orig_mach_continuous_time() : mach_continuous_time();
+        uint64_t contVal = (uint64_t)((int64_t)realCont + s_mach_cont_offset);
         if (absVal > contVal) {
             absVal = contVal;
         }
         return absVal;
     }
-    s_last_abs_enabled = s.spoofContinuousCPUClock;
+    s_last_mach_enabled = s.spoofContinuousCPUClock;
     return realTicks;
 }
 
