@@ -185,7 +185,12 @@ NSString *generate_apple_mac(void) {
     return [NSString stringWithFormat:@"%s:%02x:%02x:%02x", oui, arc4random_uniform(256), arc4random_uniform(256), arc4random_uniform(256)];
 }
 
+static NSString *s_realHardwareMachine = nil;
+
 static NSString *detect_real_system_machine(void) {
+    if (s_realHardwareMachine && s_realHardwareMachine.length > 0) {
+        return s_realHardwareMachine;
+    }
     char buf[64] = {0};
     size_t size = sizeof(buf);
     if (sysctlbyname("hw.machine", buf, &size, NULL, 0) == 0 && strlen(buf) > 0) {
@@ -199,6 +204,16 @@ static NSString *detect_real_system_machine(void) {
 }
 
 @implementation ZTDeviceProfile
+
++ (void)setRealHardwareMachine:(nullable NSString *)machine {
+    if (machine && machine.length > 0) {
+        s_realHardwareMachine = [machine copy];
+    }
+}
+
++ (nullable NSString *)realHardwareMachine {
+    return s_realHardwareMachine;
+}
 
 + (void)getScreenDimensionsForMachine:(NSString *)machine width:(CGFloat *)outW height:(CGFloat *)outH scale:(CGFloat *)outS {
     size_t specCount = sizeof(kAppleDeviceSpecs) / sizeof(kAppleDeviceSpecs[0]);
@@ -228,7 +243,7 @@ static NSString *detect_real_system_machine(void) {
 + (ZTDeviceProfile *)generateRandomProfileForRegion:(NSString *)region baseMachine:(nullable NSString *)baseMachine preferredCarrier:(nullable NSString *)preferredCarrier {
     ZTDeviceProfile *profile = [[ZTDeviceProfile alloc] init];
 
-    NSString *physicalMachine = baseMachine ?: detect_real_system_machine();
+    NSString *physicalMachine = baseMachine ?: s_realHardwareMachine ?: detect_real_system_machine();
     size_t specCount = sizeof(kAppleDeviceSpecs) / sizeof(kAppleDeviceSpecs[0]);
 
     // 1. TÌM THÔNG SỐ VÀ DÒNG MÁY THỰC TẾ

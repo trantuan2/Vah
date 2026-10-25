@@ -436,8 +436,12 @@ static NSString *getConfigPath(void) {
 }
 
 static int (*orig_sysctlbyname)(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen) = NULL;
+static NSString *s_true_hardware_machine = nil;
 
 static NSString *get_real_hardware_machine(void) {
+    if (s_true_hardware_machine && s_true_hardware_machine.length > 0) {
+        return s_true_hardware_machine;
+    }
     char buf[64] = {0};
     size_t size = sizeof(buf);
     if (orig_sysctlbyname) {
@@ -446,13 +450,19 @@ static NSString *get_real_hardware_machine(void) {
         sysctlbyname("hw.machine", buf, &size, NULL, 0);
     }
     if (strlen(buf) > 0) {
-        return [NSString stringWithUTF8String:buf];
+        s_true_hardware_machine = [NSString stringWithUTF8String:buf];
+        [ZTDeviceProfile setRealHardwareMachine:s_true_hardware_machine];
+        return s_true_hardware_machine;
     }
     struct utsname u;
     if (uname(&u) == 0 && strlen(u.machine) > 0) {
-        return [NSString stringWithUTF8String:u.machine];
+        s_true_hardware_machine = [NSString stringWithUTF8String:u.machine];
+        [ZTDeviceProfile setRealHardwareMachine:s_true_hardware_machine];
+        return s_true_hardware_machine;
     }
-    return @"iPhone14,5";
+    s_true_hardware_machine = @"iPhone14,5";
+    [ZTDeviceProfile setRealHardwareMachine:s_true_hardware_machine];
+    return s_true_hardware_machine;
 }
 
 static NSString *get_real_hardware_model(void) {
@@ -1526,6 +1536,90 @@ static NSString *get_darwin_kernel_release(NSString *sysVer) {
     return [NSString stringWithFormat:@"%ld.%ld.0", (long)darwinMajor, (long)darwinMinor];
 }
 
+static inline uint32_t get_cpufamily_for_machine(NSString *machine) {
+    if (!machine || machine.length == 0) return 0x608e83e3; // Default A10
+    if ([machine hasPrefix:@"iPhone7,"]) return 0x37fc219f; // Apple A8
+    if ([machine hasPrefix:@"iPhone8,"]) return 0x2c5558d6; // Apple A9
+    if ([machine hasPrefix:@"iPhone9,"]) return 0x608e83e3; // Apple A10 Fusion
+    if ([machine hasPrefix:@"iPhone10,"]) return 0xe81e7e1f; // Apple A11 Bionic
+    if ([machine hasPrefix:@"iPhone11,"]) return 0x07d34b9f; // Apple A12 Bionic
+    if ([machine hasPrefix:@"iPhone12,"]) return 0x462504d2; // Apple A13 Bionic
+    if ([machine hasPrefix:@"iPhone13,"]) return 0x1b588bb3; // Apple A14 Bionic
+    if ([machine hasPrefix:@"iPhone14,"]) {
+        if ([machine isEqualToString:@"iPhone14,2"] || [machine isEqualToString:@"iPhone14,3"] ||
+            [machine isEqualToString:@"iPhone14,4"] || [machine isEqualToString:@"iPhone14,5"] ||
+            [machine isEqualToString:@"iPhone14,6"] || [machine isEqualToString:@"iPhone14,7"] ||
+            [machine isEqualToString:@"iPhone14,8"]) {
+            return 0xda33d83d; // Apple A15 Bionic
+        }
+        return 0x8765edea; // Apple A16 Bionic
+    }
+    if ([machine hasPrefix:@"iPhone15,"]) return 0x8765edea; // Apple A16 Bionic
+    if ([machine hasPrefix:@"iPhone16,"]) return 0xfa33ffec; // Apple A17 Pro
+    return 0x608e83e3; // fallback A10
+}
+
+static inline const char *get_cpu_brand_for_machine(NSString *machine) {
+    if (!machine || machine.length == 0) return "Apple A10 Fusion";
+    if ([machine hasPrefix:@"iPhone7,"]) return "Apple A8";
+    if ([machine hasPrefix:@"iPhone8,"]) return "Apple A9";
+    if ([machine hasPrefix:@"iPhone9,"]) return "Apple A10 Fusion";
+    if ([machine hasPrefix:@"iPhone10,"]) return "Apple A11 Bionic";
+    if ([machine hasPrefix:@"iPhone11,"]) return "Apple A12 Bionic";
+    if ([machine hasPrefix:@"iPhone12,"]) return "Apple A13 Bionic";
+    if ([machine hasPrefix:@"iPhone13,"]) return "Apple A14 Bionic";
+    if ([machine hasPrefix:@"iPhone14,"]) return "Apple A15 Bionic";
+    if ([machine hasPrefix:@"iPhone15,"]) return "Apple A16 Bionic";
+    return "Apple A10 Fusion";
+}
+
+static inline const char *get_chip_code_for_machine(NSString *machine) {
+    if (!machine || machine.length == 0) return "T8010";
+    if ([machine hasPrefix:@"iPhone7,"]) return "T7000";
+    if ([machine hasPrefix:@"iPhone8,"]) return "S8000";
+    if ([machine hasPrefix:@"iPhone9,"]) return "T8010";
+    if ([machine hasPrefix:@"iPhone10,"]) return "T8015";
+    if ([machine hasPrefix:@"iPhone11,"]) return "T8020";
+    if ([machine hasPrefix:@"iPhone12,"]) return "T8030";
+    if ([machine hasPrefix:@"iPhone13,"]) return "T8101";
+    if ([machine hasPrefix:@"iPhone14,"]) return "T8110";
+    if ([machine hasPrefix:@"iPhone15,"]) return "T8120";
+    return "T8010";
+}
+
+static inline NSString *get_apple_kernel_version_string(NSString *sysVer, NSString *machine) {
+    NSString *darwinRelease = get_darwin_kernel_release(sysVer) ?: @"21.6.0";
+    const char *chipCode = get_chip_code_for_machine(machine);
+    
+    NSString *xnuBuild = @"8020.240.14~1";
+    NSString *buildDate = @"Mon Aug 22 20:19:51 PDT 2022";
+    if ([sysVer hasPrefix:@"15.0"] || [sysVer hasPrefix:@"15.1"]) {
+        xnuBuild = @"8019.41.5~1";
+        buildDate = @"Sun Oct 10 22:27:08 PDT 2021";
+    } else if ([sysVer hasPrefix:@"15.2"] || [sysVer hasPrefix:@"15.3"]) {
+        xnuBuild = @"8019.80.24~1";
+        buildDate = @"Sun Jan 9 23:28:01 PST 2022";
+    } else if ([sysVer hasPrefix:@"15.4"]) {
+        xnuBuild = @"8020.102.3~1";
+        buildDate = @"Mon Feb 21 20:38:51 PST 2022";
+    } else if ([sysVer hasPrefix:@"15.5"] || [sysVer hasPrefix:@"15.6"]) {
+        xnuBuild = @"8020.140.41~1";
+        buildDate = @"Mon Apr 25 21:18:03 PDT 2022";
+    } else if ([sysVer hasPrefix:@"15.7"] || [sysVer hasPrefix:@"15.8"]) {
+        xnuBuild = @"8020.240.14~1";
+        buildDate = @"Mon Aug 22 20:19:51 PDT 2022";
+    } else if ([sysVer hasPrefix:@"16."]) {
+        xnuBuild = @"8792.81.3~2";
+        buildDate = @"Mon Jan 16 00:54:15 PST 2023";
+    } else if ([sysVer hasPrefix:@"17."]) {
+        xnuBuild = @"10002.1.13~1";
+        buildDate = @"Thu Aug 17 21:03:00 PDT 2023";
+    }
+    
+    return [NSString stringWithFormat:@"Darwin Kernel Version %@: %@; root:xnu-%@/RELEASE_ARM64_%s",
+            darwinRelease, buildDate, xnuBuild, chipCode];
+}
+
 static int (*orig_sysctl)(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) = NULL;
 static int my_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
     static __thread BOOL s_in_sysctl = NO;
@@ -1611,7 +1705,57 @@ static int my_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void
             return 0;
         }
 #endif
+#ifndef HW_CPUFAMILY
+#define HW_CPUFAMILY 104
+#endif
+#ifndef HW_CPUTYPE
+#define HW_CPUTYPE 105
+#endif
+#ifndef HW_CPUSUBTYPE
+#define HW_CPUSUBTYPE 106
+#endif
+        if (name[1] == HW_CPUFAMILY) {
+            uint32_t fam = get_cpufamily_for_machine(settings.deviceMachine);
+            if (oldp && oldlenp && *oldlenp >= sizeof(uint32_t)) {
+                memcpy(oldp, &fam, sizeof(uint32_t));
+            }
+            if (oldlenp) *oldlenp = sizeof(uint32_t);
+            s_in_sysctl = NO;
+            return 0;
+        }
+        if (name[1] == HW_CPUTYPE) {
+            cpu_type_t cputype = CPU_TYPE_ARM64;
+            if (oldp && oldlenp && *oldlenp >= sizeof(cpu_type_t)) {
+                memcpy(oldp, &cputype, sizeof(cpu_type_t));
+            }
+            if (oldlenp) *oldlenp = sizeof(cpu_type_t);
+            s_in_sysctl = NO;
+            return 0;
+        }
+        if (name[1] == HW_CPUSUBTYPE) {
+            cpu_subtype_t subtype = (settings.ncpu >= 6 && ![settings.deviceMachine hasPrefix:@"iPhone10,"]) ? CPU_SUBTYPE_ARM64E : CPU_SUBTYPE_ARM64_V8;
+            if (oldp && oldlenp && *oldlenp >= sizeof(cpu_subtype_t)) {
+                memcpy(oldp, &subtype, sizeof(cpu_subtype_t));
+            }
+            if (oldlenp) *oldlenp = sizeof(cpu_subtype_t);
+            s_in_sysctl = NO;
+            return 0;
+        }
     } else if (name[0] == CTL_KERN) {
+#ifdef KERN_VERSION
+        if (name[1] == KERN_VERSION) {
+            NSString *kVer = get_apple_kernel_version_string(settings.systemVersion, settings.deviceMachine);
+            const char *val = [kVer UTF8String];
+            size_t val_len = strlen(val) + 1;
+            if (oldp && oldlenp) {
+                size_t copy_len = (*oldlenp < val_len) ? *oldlenp : val_len;
+                memcpy(oldp, val, copy_len);
+            }
+            if (oldlenp) *oldlenp = val_len;
+            s_in_sysctl = NO;
+            return 0;
+        }
+#endif
         if (name[1] == KERN_BOOTTIME && settings.bootTimeSec > 0) {
             struct timeval bt;
             bt.tv_sec = (time_t)settings.bootTimeSec;
@@ -1745,8 +1889,7 @@ static int my_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *
     }
 
     if (strcmp(name, "kern.version") == 0) {
-        NSString *releaseStr = get_darwin_kernel_release(settings.systemVersion);
-        NSString *kVer = [NSString stringWithFormat:@"Darwin Kernel Version %@: root:xnu/RELEASE_ARM64", releaseStr ?: @"24.4.0"];
+        NSString *kVer = get_apple_kernel_version_string(settings.systemVersion, settings.deviceMachine);
         const char *val = [kVer UTF8String];
         size_t val_len = strlen(val) + 1;
         if (oldp && oldlenp) {
@@ -1754,6 +1897,48 @@ static int my_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *
             memcpy(oldp, val, copy_len);
         }
         if (oldlenp) *oldlenp = val_len;
+        s_in_sysctlbyname = NO;
+        return 0;
+    }
+
+    if (strcmp(name, "hw.cpufamily") == 0) {
+        uint32_t fam = get_cpufamily_for_machine(settings.deviceMachine);
+        if (oldp && oldlenp && *oldlenp >= sizeof(uint32_t)) {
+            memcpy(oldp, &fam, sizeof(uint32_t));
+        }
+        if (oldlenp) *oldlenp = sizeof(uint32_t);
+        s_in_sysctlbyname = NO;
+        return 0;
+    }
+
+    if (strcmp(name, "hw.cputype") == 0) {
+        cpu_type_t cputype = CPU_TYPE_ARM64;
+        if (oldp && oldlenp && *oldlenp >= sizeof(cpu_type_t)) {
+            memcpy(oldp, &cputype, sizeof(cpu_type_t));
+        }
+        if (oldlenp) *oldlenp = sizeof(cpu_type_t);
+        s_in_sysctlbyname = NO;
+        return 0;
+    }
+
+    if (strcmp(name, "hw.cpusubtype") == 0) {
+        cpu_subtype_t subtype = (settings.ncpu >= 6 && ![settings.deviceMachine hasPrefix:@"iPhone10,"]) ? CPU_SUBTYPE_ARM64E : CPU_SUBTYPE_ARM64_V8;
+        if (oldp && oldlenp && *oldlenp >= sizeof(cpu_subtype_t)) {
+            memcpy(oldp, &subtype, sizeof(cpu_subtype_t));
+        }
+        if (oldlenp) *oldlenp = sizeof(cpu_subtype_t);
+        s_in_sysctlbyname = NO;
+        return 0;
+    }
+
+    if (strcmp(name, "machdep.cpu.brand_string") == 0) {
+        const char *brand = get_cpu_brand_for_machine(settings.deviceMachine);
+        size_t b_len = strlen(brand) + 1;
+        if (oldp && oldlenp) {
+            size_t copy_len = (*oldlenp < b_len) ? *oldlenp : b_len;
+            memcpy(oldp, brand, copy_len);
+        }
+        if (oldlenp) *oldlenp = b_len;
         s_in_sysctlbyname = NO;
         return 0;
     }
@@ -3424,6 +3609,7 @@ static BOOL is_sensitive_image_path_cstr(const char *name) {
     return (strstr(name, "Zalotweak") != NULL ||
             strstr(name, "zalotweak") != NULL ||
             strstr(name, "Substrate") != NULL ||
+            strstr(name, "substrate") != NULL ||
             strstr(name, "substitute") != NULL ||
             strstr(name, "ellekit") != NULL ||
             strstr(name, "ElleKit") != NULL ||
@@ -3438,23 +3624,29 @@ static BOOL is_sensitive_image_path_cstr(const char *name) {
             strstr(name, "libhooker") != NULL ||
             strstr(name, "Choicy") != NULL ||
             strstr(name, "Shadow") != NULL ||
-            strstr(name, "MobileSafety") != NULL);
+            strstr(name, "MobileSafety") != NULL ||
+            strstr(name, "Frida") != NULL ||
+            strstr(name, "frida") != NULL ||
+            strstr(name, "cydia") != NULL ||
+            strstr(name, "Cydia") != NULL ||
+            strstr(name, "SSLKillSwitch") != NULL ||
+            strstr(name, "sslkillswitch") != NULL ||
+            strstr(name, "vnodebypass") != NULL ||
+            strstr(name, "kernbypass") != NULL);
 }
 
 static const char *(*orig_dyld_get_image_name)(uint32_t image_index);
 static const char *my_dyld_get_image_name(uint32_t image_index) {
     const char *name = orig_dyld_get_image_name ? orig_dyld_get_image_name(image_index) : _dyld_get_image_name(image_index);
     if (name && is_tweak_active() && is_sensitive_image_path_cstr(name)) {
-        if (is_zalo_caller(__builtin_return_address(0))) {
-            static const char *s_safe_fallback_images[] = {
-                "/usr/lib/libobjc.A.dylib",
-                "/usr/lib/system/libsystem_c.dylib",
-                "/usr/lib/system/libsystem_kernel.dylib",
-                "/usr/lib/system/libsystem_m.dylib",
-                "/usr/lib/system/libdispatch.dylib"
-            };
-            return s_safe_fallback_images[image_index % 5];
-        }
+        static const char *s_safe_fallback_images[] = {
+            "/usr/lib/libobjc.A.dylib",
+            "/usr/lib/system/libsystem_c.dylib",
+            "/usr/lib/system/libsystem_kernel.dylib",
+            "/usr/lib/system/libsystem_m.dylib",
+            "/usr/lib/system/libdispatch.dylib"
+        };
+        return s_safe_fallback_images[image_index % 5];
     }
     return name;
 }
@@ -3466,7 +3658,7 @@ static int my_dladdr(const void *addr, Dl_info *info) {
         BOOL sensitiveSym = (info->dli_sname && (strncmp(info->dli_sname, "ZT", 2) == 0 ||
                                                  strncmp(info->dli_sname, "my_", 3) == 0 ||
                                                  strncmp(info->dli_sname, "_logos_", 7) == 0));
-        if ((sensitiveImg || sensitiveSym) && is_zalo_caller(__builtin_return_address(0))) {
+        if (sensitiveImg || sensitiveSym) {
             info->dli_fname = "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation";
             info->dli_sname = NULL;
             info->dli_saddr = NULL;
@@ -3479,9 +3671,7 @@ static const char *(*orig_class_getImageName)(Class cls) = NULL;
 static const char *my_class_getImageName(Class cls) {
     const char *img = orig_class_getImageName ? orig_class_getImageName(cls) : class_getImageName(cls);
     if (img && is_tweak_active() && is_sensitive_image_path_cstr(img)) {
-        if (is_zalo_caller(__builtin_return_address(0))) {
-            return "/System/Library/Frameworks/UIKit.framework/UIKit";
-        }
+        return "/System/Library/Frameworks/UIKit.framework/UIKit";
     }
     return img;
 }
@@ -3490,7 +3680,7 @@ static const char **(*orig_objc_copyImageNames)(unsigned int *outCount) = NULL;
 static const char **my_objc_copyImageNames(unsigned int *outCount) {
     unsigned int realCount = 0;
     const char **list = orig_objc_copyImageNames ? orig_objc_copyImageNames(&realCount) : objc_copyImageNames(&realCount);
-    if (!list || !is_tweak_active() || !is_zalo_caller(__builtin_return_address(0))) {
+    if (!list || !is_tweak_active()) {
         if (outCount) *outCount = realCount;
         return list;
     }
@@ -3510,7 +3700,7 @@ static Class *(*orig_objc_copyClassList)(unsigned int *outCount) = NULL;
 static Class *my_objc_copyClassList(unsigned int *outCount) {
     unsigned int realCount = 0;
     Class *list = orig_objc_copyClassList ? orig_objc_copyClassList(&realCount) : objc_copyClassList(&realCount);
-    if (!list || !is_tweak_active() || !is_zalo_caller(__builtin_return_address(0))) {
+    if (!list || !is_tweak_active()) {
         if (outCount) *outCount = realCount;
         return list;
     }
@@ -5397,6 +5587,17 @@ static void zt_early_keychain_purge_if_needed(void) {
         universal_hook_c_function("class_getImageName", (void *)class_getImageName, (void *)my_class_getImageName, (void **)&orig_class_getImageName);
         universal_hook_c_function("objc_copyImageNames", (void *)objc_copyImageNames, (void *)my_objc_copyImageNames, (void **)&orig_objc_copyImageNames);
         universal_hook_c_function("objc_copyClassList", (void *)objc_copyClassList, (void *)my_objc_copyClassList, (void **)&orig_objc_copyClassList);
+
+        {
+            struct rebinding dyld_rebs[] = {
+                { "_dyld_get_image_name", (void *)my_dyld_get_image_name, (void **)&orig_dyld_get_image_name },
+                { "dladdr", (void *)my_dladdr, (void **)&orig_dladdr },
+                { "class_getImageName", (void *)my_class_getImageName, (void **)&orig_class_getImageName },
+                { "objc_copyImageNames", (void *)my_objc_copyImageNames, (void **)&orig_objc_copyImageNames },
+                { "objc_copyClassList", (void *)my_objc_copyClassList, (void **)&orig_objc_copyClassList }
+            };
+            rebind_symbols(dyld_rebs, 5);
+        }
 
         if (![[ZTSecurityManager sharedManager] isLicenseValid]) {
             NSLog(@"[ZaloTweak] ❌ BẢN QUYỀN CHƯA KÍCH HOẠT HOẶC ĐÃ HẾT HẠN! Vui lòng vào Cài đặt để kích hoạt.");
