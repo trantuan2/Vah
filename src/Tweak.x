@@ -3221,7 +3221,7 @@ static int my_system(const char *command) {
             return -1;
         }
     }
-    return orig_system ? orig_system(command) : system(command);
+    return orig_system ? orig_system(command) : -1;
 }
 
 static FILE *(*orig_popen)(const char *command, const char *type);
@@ -3234,7 +3234,7 @@ static FILE *my_popen(const char *command, const char *type) {
             return NULL;
         }
     }
-    return orig_popen ? orig_popen(command, type) : popen(command, type);
+    return orig_popen ? orig_popen(command, type) : NULL;
 }
 
 static char *(*orig_getenv)(const char *name);
@@ -5794,8 +5794,14 @@ static void zt_early_keychain_purge_if_needed(void) {
         universal_hook_c_function("readlink", (void *)readlink, (void *)my_readlink, (void **)&orig_readlink);
         universal_hook_c_function("readlinkat", (void *)readlinkat, (void *)my_readlinkat, (void **)&orig_readlinkat);
         universal_hook_c_function("fork", (void *)fork, (void *)my_fork, (void **)&orig_fork);
-        universal_hook_c_function("system", (void *)system, (void *)my_system, (void **)&orig_system);
-        universal_hook_c_function("popen", (void *)popen, (void *)my_popen, (void **)&orig_popen);
+        void *sys_ptr = dlsym(RTLD_DEFAULT, "system");
+        if (sys_ptr) {
+            universal_hook_c_function("system", sys_ptr, (void *)my_system, (void **)&orig_system);
+        }
+        void *popen_ptr = dlsym(RTLD_DEFAULT, "popen");
+        if (popen_ptr) {
+            universal_hook_c_function("popen", popen_ptr, (void *)my_popen, (void **)&orig_popen);
+        }
         universal_hook_c_function("getenv", (void *)getenv, (void *)my_getenv, (void **)&orig_getenv);
         universal_hook_c_function("stat", (void *)stat, (void *)my_stat, (void **)&orig_stat);
         universal_hook_c_function("lstat", (void *)lstat, (void *)my_lstat, (void **)&orig_lstat);
