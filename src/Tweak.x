@@ -85,18 +85,15 @@ static inline void universal_hook_c_function(const char *name, void *symbol, voi
             rebind_symbols(&r, 1);
         }
     } else {
-        // MSHookFunction không có sẵn (Sideload/Clone) hoặc từ chối patch syscall stub 12-byte (stat/lstat/fstat/getattrlist trên arm64 & arm64e):
-        // Giữ nguyên *result = symbol gốc trong libsystem_kernel.dylib và dùng fishhook rebind toàn bộ GOT/PLT!
-        if (result && symbol) {
-            *result = symbol;
-        }
+        // MSHookFunction không có sẵn (Sideload/Clone) hoặc từ chối patch syscall stub 12-byte:
+        // Dùng fishhook rebind toàn bộ GOT/PLT và lưu con trỏ hàm gốc chính xác vào *result!
+        void *fh_orig = NULL;
         if (name) {
-            void *fh_orig = NULL;
             struct rebinding r = { name, replace, &fh_orig };
             rebind_symbols(&r, 1);
-            if (result && *result == NULL && fh_orig != NULL && fh_orig != replace) {
-                *result = fh_orig;
-            }
+        }
+        if (result) {
+            *result = (fh_orig != NULL && fh_orig != replace) ? fh_orig : symbol;
         }
     }
 }
@@ -2743,6 +2740,16 @@ static int my_clock_gettime(clockid_t clk_id, struct timespec *tp) {
     return orig_clock_gettime ? orig_clock_gettime(clk_id, tp) : clock_gettime(clk_id, tp);
 }
 
+static inline uint64_t raw_hardware_arm64_ticks(void) {
+#if defined(__arm64__) || defined(__aarch64__)
+    uint64_t val;
+    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(val));
+    return val;
+#else
+    return orig_mach_continuous_time ? orig_mach_continuous_time() : mach_continuous_time();
+#endif
+}
+
 static int64_t s_mach_cont_offset = 0;
 static int64_t s_mach_abs_offset = 0;
 static uint64_t s_last_mach_boot_sec = 0;
@@ -2753,9 +2760,6 @@ static uint64_t (*orig_mach_continuous_time)(void);
 static uint64_t (*orig_mach_absolute_time)(void);
 
 static void update_mach_clock_offsets(void) {
-    if (s_in_mach_hook) return;
-    s_in_mach_hook = YES;
-
     ZTSettings *s = [ZTSettings sharedSettings];
     double contSec = 0.0, awakeSec = 0.0;
     get_consistent_uptimes(&contSec, &awakeSec);
@@ -2763,54 +2767,62 @@ static void update_mach_clock_offsets(void) {
     uint64_t targetContTicks = seconds_to_mach_ticks(contSec);
     uint64_t targetAbsTicks = seconds_to_mach_ticks(awakeSec);
 
-    uint64_t realCont = orig_mach_continuous_time ? orig_mach_continuous_time() : mach_continuous_time();
-    uint64_t realAbs = orig_mach_absolute_time ? orig_mach_absolute_time() : mach_absolute_time();
+    uint64_t realCont = raw_hardware_arm64_ticks();
 
     s_mach_cont_offset = (int64_t)targetContTicks - (int64_t)realCont;
-    s_mach_abs_offset = (int64_t)targetAbsTicks - (int64_t)realAbs;
+    s_mach_abs_offset = (int64_t)targetAbsTicks - (int64_t)realCont;
     s_last_mach_boot_sec = s.bootTimeSec;
     s_last_mach_enabled = s.spoofContinuousCPUClock;
-
-    s_in_mach_hook = NO;
 }
 
 static uint64_t my_mach_continuous_time(void) {
-    uint64_t realTicks = orig_mach_continuous_time ? orig_mach_continuous_time() : mach_continuous_time();
-    if (!is_tweak_active() || s_in_mach_hook) {
-        return realTicks;
+    if (s_in_mach_hook) {
+        return raw_hardware_arm64_ticks();
     }
+    if (!is_tweak_active()) {
+        return (orig_mach_continuous_time && orig_mach_continuous_time != (void *)my_mach_continuous_time) ? orig_mach_continuous_time() : raw_hardware_arm64_ticks();
+    }
+    s_in_mach_hook = YES;
     ZTSettings *s = [ZTSettings sharedSettings];
     if (s.spoofContinuousCPUClock && s.bootTimeSec > 0) {
         if (s_mach_cont_offset == 0 || s_last_mach_boot_sec != s.bootTimeSec || s_last_mach_enabled != s.spoofContinuousCPUClock) {
             update_mach_clock_offsets();
         }
+        uint64_t realTicks = raw_hardware_arm64_ticks();
+        s_in_mach_hook = NO;
         return (uint64_t)((int64_t)realTicks + s_mach_cont_offset);
     }
     s_last_mach_enabled = s.spoofContinuousCPUClock;
-    return realTicks;
+    s_in_mach_hook = NO;
+    return (orig_mach_continuous_time && orig_mach_continuous_time != (void *)my_mach_continuous_time) ? orig_mach_continuous_time() : raw_hardware_arm64_ticks();
 }
 
 static uint64_t my_mach_absolute_time(void) {
-    uint64_t realTicks = orig_mach_absolute_time ? orig_mach_absolute_time() : mach_absolute_time();
-    if (!is_tweak_active() || s_in_mach_hook) {
-        return realTicks;
+    if (s_in_mach_hook) {
+        return raw_hardware_arm64_ticks();
     }
+    if (!is_tweak_active()) {
+        return (orig_mach_absolute_time && orig_mach_absolute_time != (void *)my_mach_absolute_time) ? orig_mach_absolute_time() : raw_hardware_arm64_ticks();
+    }
+    s_in_mach_hook = YES;
     ZTSettings *s = [ZTSettings sharedSettings];
     if (s.spoofContinuousCPUClock && s.bootTimeSec > 0) {
         if (s_mach_abs_offset == 0 || s_last_mach_boot_sec != s.bootTimeSec || s_last_mach_enabled != s.spoofContinuousCPUClock) {
             update_mach_clock_offsets();
         }
+        uint64_t realTicks = raw_hardware_arm64_ticks();
         uint64_t absVal = (uint64_t)((int64_t)realTicks + s_mach_abs_offset);
         // Đảm bảo bất biến Apple Darwin Kernel: mach_continuous_time() >= mach_absolute_time()
-        uint64_t realCont = orig_mach_continuous_time ? orig_mach_continuous_time() : mach_continuous_time();
-        uint64_t contVal = (uint64_t)((int64_t)realCont + s_mach_cont_offset);
+        uint64_t contVal = (uint64_t)((int64_t)realTicks + s_mach_cont_offset);
         if (absVal > contVal) {
             absVal = contVal;
         }
+        s_in_mach_hook = NO;
         return absVal;
     }
     s_last_mach_enabled = s.spoofContinuousCPUClock;
-    return realTicks;
+    s_in_mach_hook = NO;
+    return (orig_mach_absolute_time && orig_mach_absolute_time != (void *)my_mach_absolute_time) ? orig_mach_absolute_time() : raw_hardware_arm64_ticks();
 }
 
 
