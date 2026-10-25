@@ -848,7 +848,7 @@ UIViewController *ZTGetTopViewController(void) {
     ZTSettings *s = [ZTSettings sharedSettings];
 
     NSString *cpuStatus = s.spoofContinuousCPUClock ? @"🟢 ĐANG BẬT" : @"⚪ ĐANG TẮT";
-    NSString *voipStatus = s.spoofVoIPPushToken ? @"🟢 ĐANG BẬT" : @"⚪ ĐANG TẮT";
+    NSString *voipStatus = s.spoofVoIPPushToken ? @"🟢 ĐANG BẬT (TỰ SINH 32-BYTE)" : @"🟢 ĐANG TẮT (TOKEN GỐC APPLE - KHUYÊN DÙNG)";
     NSString *tccStatus = s.resetTCCPromptOnWipe ? @"🟢 ĐANG BẬT" : @"⚪ ĐANG TẮT";
 
     NSString *msg = [NSString stringWithFormat:
@@ -856,8 +856,8 @@ UIViewController *ZTGetTopViewController(void) {
                      @"• Khi BẬT: Tự động đồng bộ số tick CPU khớp với bootTime hồ sơ mới (Chống tăng liền mạch nối đuôi giữa 2 acc).\n"
                      @"• Khi TẮT: Đọc số tick CPU thật của máy (Bạn cần tắt nguồn khởi động lại máy để CPU về 0).\n\n"
                      @"2. Token VoIP PushKit: %@\n"
-                     @"• Khi BẬT: Tự sinh mã 32-byte VoIP độc nhất chuẩn Apple theo từng Profile (Chống bị Zalo khóa tài khoản dây chuyền).\n"
-                     @"• Khi TẮT: Trả về Token VoIP gốc máy thật.\n\n"
+                     @"• Khi BẬT: Tự sinh mã 32-byte VoIP theo từng Profile.\n"
+                     @"• Khi TẮT: Dùng Token VoIP gốc Apple Gateway cấp (Khuyên dùng để Apple APNs xác thực 200 OK, tránh BadDeviceToken).\n\n"
                      @"3. Quyền Danh Bạ (TCC Reset): %@\n"
                      @"• Khi BẬT: Trả về trạng thái Chưa Xác Định (NotDetermined) như máy mới để kích hoạt dialog xin quyền của iOS và chống đồng bộ ngầm gây phình dung lượng.\n"
                      @"• Khi TẮT: Giữ nguyên quyền danh bạ hiện có của hệ thống.\n\n"
@@ -876,7 +876,7 @@ UIViewController *ZTGetTopViewController(void) {
         [self showHardwareSpoofSettingsFrom:presenter];
     }]];
 
-    NSString *toggleVoIPTitle = s.spoofVoIPPushToken ? @"📞 TẮT Tự Sinh Token VoIP (Dùng Token Gốc)" : @"📞 BẬT Tự Sinh Token VoIP (Khuyên Dùng)";
+    NSString *toggleVoIPTitle = s.spoofVoIPPushToken ? @"📞 Chuyển sang Dùng Token Gốc Apple (Khuyên Dùng)" : @"📞 Chuyển sang Tự Sinh Token VoIP 32-Byte";
     [alert addAction:[UIAlertAction actionWithTitle:toggleVoIPTitle style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
         s.spoofVoIPPushToken = !s.spoofVoIPPushToken;
         [s saveSettings];

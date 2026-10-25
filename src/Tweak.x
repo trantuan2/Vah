@@ -989,7 +989,7 @@ static void purge_entire_sandbox_safely(void) {
         self.spoofedVoIPToken = dict[@"spoofedVoIPToken"] ?: @"";
         self.lastWipedVoIPToken = dict[@"lastWipedVoIPToken"] ?: @"";
         self.spoofContinuousCPUClock = (dict[@"spoofContinuousCPUClock"] != nil) ? [dict[@"spoofContinuousCPUClock"] boolValue] : YES;
-        self.spoofVoIPPushToken = (dict[@"spoofVoIPPushToken"] != nil) ? [dict[@"spoofVoIPPushToken"] boolValue] : YES;
+        self.spoofVoIPPushToken = (dict[@"spoofVoIPPushToken"] != nil) ? [dict[@"spoofVoIPPushToken"] boolValue] : NO;
         self.resetTCCPromptOnWipe = (dict[@"resetTCCPromptOnWipe"] != nil) ? [dict[@"resetTCCPromptOnWipe"] boolValue] : YES;
         self.contactsPermissionDetermined = [dict[@"contactsPermissionDetermined"] boolValue];
         if (self.spoofedVoIPToken.length == 0 && self.hasConfiguredProfile) {
@@ -4410,6 +4410,12 @@ static NSData *get_or_create_spoofed_voip_token_data(void) {
         }
         // Cho phép quét thực tế app trên màn hình (YouTube, Facebook, Momo, Vietcombank, ZaloPay...)
         // Để Zalo gửi danh sách apps thực tế tự nhiên lên máy chủ, không bị rỗng apps: []
+        BOOL res = %orig(url);
+        void *c0 = __builtin_return_address(0);
+        if (is_zalo_caller(c0)) {
+            logAudit(@"SCHEME-CHECK", [NSString stringWithFormat:@"canOpenURL('%@') -> %@", [url absoluteString], (res ? @"YES ✅ (Có cài đặt)" : @"NO ❌ (Chưa cài đặt hoặc bị Apple LS chặn)")]);
+        }
+        return res;
     }
     return %orig;
 }

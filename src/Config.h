@@ -60,7 +60,7 @@
 @property (nonatomic, strong) NSString *proxyUser;         // Tài khoản Proxy (tuỳ chọn)
 @property (nonatomic, strong) NSString *proxyPass;         // Mật khẩu Proxy (tuỳ chọn)
 @property (nonatomic, assign) BOOL spoofContinuousCPUClock; // Đồng bộ bộ đếm thạch anh CPU mach_time theo Profile (Mặc định YES)
-@property (nonatomic, assign) BOOL spoofVoIPPushToken;      // Tự sinh mã VoIP token 32-byte riêng theo Profile (Mặc định YES)
+@property (nonatomic, assign) BOOL spoofVoIPPushToken;      // Tự sinh mã VoIP token 32-byte (Mặc định NO để dùng Token gốc Apple)
 @property (nonatomic, assign) BOOL resetTCCPromptOnWipe;     // Reset quyền Danh bạ để Zalo hỏi lại như máy mới (Mặc định YES)
 @property (nonatomic, assign) BOOL contactsPermissionDetermined; // Đã từng hỏi quyền danh bạ trong profile này chưa
 @property (nonatomic, strong) NSString *centralizedDid;       // Central Device ID từ centralized.zaloapp.com
