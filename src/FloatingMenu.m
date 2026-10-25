@@ -2334,6 +2334,10 @@ static void wipe_directory_recursively_safely(NSFileManager *fm, NSString *dirPa
     settings.needsSandboxPurge = YES;
     settings.contactsPermissionDetermined = NO;
     settings.notificationPermissionDetermined = NO;
+    settings.photosPermissionDetermined = NO;
+    settings.cameraPermissionDetermined = NO;
+    settings.micPermissionDetermined = NO;
+    settings.locationPermissionDetermined = NO;
 
     BOOL isJB = NO;
 #if defined(THEOS_PACKAGE_SCHEME_ROOTHIDE) || defined(THEOS_PACKAGE_SCHEME_ROOTLESS)

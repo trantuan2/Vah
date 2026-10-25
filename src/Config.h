@@ -64,6 +64,10 @@
 @property (nonatomic, assign) BOOL resetTCCPromptOnWipe;     // Reset quyền Danh bạ để Zalo hỏi lại như máy mới (Mặc định YES)
 @property (nonatomic, assign) BOOL contactsPermissionDetermined; // Đã từng hỏi quyền danh bạ trong profile này chưa
 @property (nonatomic, assign) BOOL notificationPermissionDetermined; // Đã từng hỏi quyền thông báo trong profile này chưa
+@property (nonatomic, assign) BOOL photosPermissionDetermined; // Đã từng hỏi quyền thư viện ảnh trong profile này chưa
+@property (nonatomic, assign) BOOL cameraPermissionDetermined; // Đã từng hỏi quyền camera trong profile này chưa
+@property (nonatomic, assign) BOOL micPermissionDetermined; // Đã từng hỏi quyền micro trong profile này chưa
+@property (nonatomic, assign) BOOL locationPermissionDetermined; // Đã từng hỏi quyền vị trí trong profile này chưa
 @property (nonatomic, strong) NSString *centralizedDid;       // Central Device ID từ centralized.zaloapp.com
 @property (nonatomic, strong) NSString *currentAPNsToken;      // Token APNs hiện tại của Zalo
 @property (nonatomic, strong) NSString *lastWipedAPNsToken;    // Token APNs trước lần Wipe gần nhất

@@ -993,6 +993,10 @@ static void purge_entire_sandbox_safely(void) {
         self.resetTCCPromptOnWipe = (dict[@"resetTCCPromptOnWipe"] != nil) ? [dict[@"resetTCCPromptOnWipe"] boolValue] : YES;
         self.contactsPermissionDetermined = [dict[@"contactsPermissionDetermined"] boolValue];
         self.notificationPermissionDetermined = [dict[@"notificationPermissionDetermined"] boolValue];
+        self.photosPermissionDetermined = [dict[@"photosPermissionDetermined"] boolValue];
+        self.cameraPermissionDetermined = [dict[@"cameraPermissionDetermined"] boolValue];
+        self.micPermissionDetermined = [dict[@"micPermissionDetermined"] boolValue];
+        self.locationPermissionDetermined = [dict[@"locationPermissionDetermined"] boolValue];
         if (self.spoofedVoIPToken.length == 0 && self.hasConfiguredProfile) {
             unsigned char voipBytes[32];
             arc4random_buf(voipBytes, sizeof(voipBytes));
@@ -1229,6 +1233,10 @@ static void purge_entire_sandbox_safely(void) {
     dict[@"resetTCCPromptOnWipe"] = @(self.resetTCCPromptOnWipe);
     dict[@"contactsPermissionDetermined"] = @(self.contactsPermissionDetermined);
     dict[@"notificationPermissionDetermined"] = @(self.notificationPermissionDetermined);
+    dict[@"photosPermissionDetermined"] = @(self.photosPermissionDetermined);
+    dict[@"cameraPermissionDetermined"] = @(self.cameraPermissionDetermined);
+    dict[@"micPermissionDetermined"] = @(self.micPermissionDetermined);
+    dict[@"locationPermissionDetermined"] = @(self.locationPermissionDetermined);
     if (self.lastWipedIDFV) dict[@"lastWipedIDFV"] = self.lastWipedIDFV;
     if (self.lastWipedIP) dict[@"lastWipedIP"] = self.lastWipedIP;
     dict[@"lastWipedTimestamp"] = @(self.lastWipedTimestamp);
@@ -1334,6 +1342,10 @@ NSString *generate_random_mac(void) {
     }
     self.contactsPermissionDetermined = NO;
     self.notificationPermissionDetermined = NO;
+    self.photosPermissionDetermined = NO;
+    self.cameraPermissionDetermined = NO;
+    self.micPermissionDetermined = NO;
+    self.locationPermissionDetermined = NO;
 
     logAudit(@"DEVICE-GEN", [NSString stringWithFormat:@"Đã sinh máy ngẫu nhiên mới: %@ (%@) | iOS: %@ (%@) | RAM: %.1fGB | L2: %lluMB | Màn: %.0fx%.0f@%.0fx | Vùng: %@ (%@) | Tên: %@",
               self.deviceMachine, self.deviceModel, self.systemVersion, self.kernOsVersion,
@@ -2473,6 +2485,183 @@ static CFIndex my_ABAddressBookGetAuthorizationStatus(void) {
         return;
     }
     %orig(options, completionHandler);
+}
+
+%end
+
+// ==========================================
+// HOOK TCC: PHOTOS (PHPhotoLibrary)
+// Giả lập chưa hỏi quyền Thư viện ảnh sau khi Wipe
+// ==========================================
+@interface PHPhotoLibrary : NSObject
++ (NSInteger)authorizationStatus;
++ (NSInteger)authorizationStatusForAccessLevel:(NSInteger)accessLevel;
++ (void)requestAuthorization:(void (^)(NSInteger status))handler;
++ (void)requestAuthorizationForAccessLevel:(NSInteger)accessLevel handler:(void (^)(NSInteger status))handler;
+@end
+
+%hook PHPhotoLibrary
+
++ (NSInteger)authorizationStatus {
+    if (is_tweak_active()) {
+        ZTSettings *s = [ZTSettings sharedSettings];
+        if (s.resetTCCPromptOnWipe && !s.photosPermissionDetermined) {
+            void *c0 = __builtin_return_address(0);
+            if (is_zalo_caller(c0)) {
+                logAudit(@"TCC-PHOTOS", @"🖼️ Zalo kiểm tra quyền Thư Viện Ảnh (PHPhotoLibrary authorizationStatus) -> [TRẢ VỀ NotDetermined (0)]");
+                return 0; // PHAuthorizationStatusNotDetermined
+            }
+        }
+    }
+    return %orig;
+}
+
++ (NSInteger)authorizationStatusForAccessLevel:(NSInteger)accessLevel {
+    if (is_tweak_active()) {
+        ZTSettings *s = [ZTSettings sharedSettings];
+        if (s.resetTCCPromptOnWipe && !s.photosPermissionDetermined) {
+            void *c0 = __builtin_return_address(0);
+            if (is_zalo_caller(c0)) {
+                logAudit(@"TCC-PHOTOS", [NSString stringWithFormat:@"🖼️ Zalo kiểm tra quyền Thư Viện Ảnh (authorizationStatusForAccessLevel: %ld) -> [TRẢ VỀ NotDetermined (0)]", (long)accessLevel]);
+                return 0; // PHAuthorizationStatusNotDetermined
+            }
+        }
+    }
+    return %orig(accessLevel);
+}
+
++ (void)requestAuthorization:(void (^)(NSInteger status))handler {
+    if (is_tweak_active()) {
+        ZTSettings *s = [ZTSettings sharedSettings];
+        s.photosPermissionDetermined = YES;
+        [s saveSettings];
+        logAudit(@"TCC-PHOTOS", @"🖼️ Zalo yêu cầu cấp quyền Thư Viện Ảnh (requestAuthorization) -> [Kích hoạt dialog Apple thật]");
+    }
+    %orig(handler);
+}
+
++ (void)requestAuthorizationForAccessLevel:(NSInteger)accessLevel handler:(void (^)(NSInteger status))handler {
+    if (is_tweak_active()) {
+        ZTSettings *s = [ZTSettings sharedSettings];
+        s.photosPermissionDetermined = YES;
+        [s saveSettings];
+        logAudit(@"TCC-PHOTOS", [NSString stringWithFormat:@"🖼️ Zalo yêu cầu cấp quyền Thư Viện Ảnh (requestAuthorizationForAccessLevel: %ld) -> [Kích hoạt dialog Apple thật]", (long)accessLevel]);
+    }
+    %orig(accessLevel, handler);
+}
+
+%end
+
+// ==========================================
+// HOOK TCC: CAMERA & MICROPHONE (AVCaptureDevice)
+// Giả lập chưa hỏi quyền Camera / Mic sau khi Wipe
+// ==========================================
+@interface AVCaptureDevice : NSObject
++ (NSInteger)authorizationStatusForMediaType:(NSString *)mediaType;
++ (void)requestAccessForMediaType:(NSString *)mediaType completionHandler:(void (^)(BOOL granted))handler;
+@end
+
+%hook AVCaptureDevice
+
++ (NSInteger)authorizationStatusForMediaType:(NSString *)mediaType {
+    if (is_tweak_active()) {
+        ZTSettings *s = [ZTSettings sharedSettings];
+        if (s.resetTCCPromptOnWipe) {
+            void *c0 = __builtin_return_address(0);
+            if (is_zalo_caller(c0)) {
+                if ([mediaType isEqualToString:@"vide"] || [mediaType isEqualToString:@"AVMediaTypeVideo"]) {
+                    if (!s.cameraPermissionDetermined) {
+                        logAudit(@"TCC-CAMERA", @"📷 Zalo kiểm tra quyền Camera (AVCaptureDevice) -> [TRẢ VỀ NotDetermined (0)]");
+                        return 0; // AVAuthorizationStatusNotDetermined
+                    }
+                } else if ([mediaType isEqualToString:@"soun"] || [mediaType isEqualToString:@"AVMediaTypeAudio"]) {
+                    if (!s.micPermissionDetermined) {
+                        logAudit(@"TCC-MIC", @"🎙️ Zalo kiểm tra quyền Micro (AVCaptureDevice) -> [TRẢ VỀ NotDetermined (0)]");
+                        return 0; // AVAuthorizationStatusNotDetermined
+                    }
+                }
+            }
+        }
+    }
+    return %orig(mediaType);
+}
+
++ (void)requestAccessForMediaType:(NSString *)mediaType completionHandler:(void (^)(BOOL granted))handler {
+    if (is_tweak_active()) {
+        ZTSettings *s = [ZTSettings sharedSettings];
+        if ([mediaType isEqualToString:@"vide"] || [mediaType isEqualToString:@"AVMediaTypeVideo"]) {
+            s.cameraPermissionDetermined = YES;
+            logAudit(@"TCC-CAMERA", @"📷 Zalo yêu cầu cấp quyền Camera (requestAccess) -> [Kích hoạt dialog Apple thật]");
+        } else if ([mediaType isEqualToString:@"soun"] || [mediaType isEqualToString:@"AVMediaTypeAudio"]) {
+            s.micPermissionDetermined = YES;
+            logAudit(@"TCC-MIC", @"🎙️ Zalo yêu cầu cấp quyền Micro (requestAccess) -> [Kích hoạt dialog Apple thật]");
+        }
+        [s saveSettings];
+    }
+    %orig(mediaType, handler);
+}
+
+%end
+
+// ==========================================
+// HOOK TCC: LOCATION (CLLocationManager)
+// Giả lập chưa hỏi quyền Vị Trí sau khi Wipe
+// ==========================================
+@interface CLLocationManager : NSObject
++ (NSInteger)authorizationStatus;
+- (NSInteger)authorizationStatus;
+- (void)requestWhenInUseAuthorization;
+- (void)requestAlwaysAuthorization;
+@end
+
+%hook CLLocationManager
+
++ (NSInteger)authorizationStatus {
+    if (is_tweak_active()) {
+        ZTSettings *s = [ZTSettings sharedSettings];
+        if (s.resetTCCPromptOnWipe && !s.locationPermissionDetermined) {
+            void *c0 = __builtin_return_address(0);
+            if (is_zalo_caller(c0)) {
+                logAudit(@"TCC-LOCATION", @"📍 Zalo kiểm tra quyền Vị Trí (+authorizationStatus) -> [TRẢ VỀ kCLAuthorizationStatusNotDetermined (0)]");
+                return 0; // kCLAuthorizationStatusNotDetermined
+            }
+        }
+    }
+    return %orig;
+}
+
+- (NSInteger)authorizationStatus {
+    if (is_tweak_active()) {
+        ZTSettings *s = [ZTSettings sharedSettings];
+        if (s.resetTCCPromptOnWipe && !s.locationPermissionDetermined) {
+            void *c0 = __builtin_return_address(0);
+            if (is_zalo_caller(c0)) {
+                logAudit(@"TCC-LOCATION", @"📍 Zalo kiểm tra quyền Vị Trí (-authorizationStatus) -> [TRẢ VỀ kCLAuthorizationStatusNotDetermined (0)]");
+                return 0; // kCLAuthorizationStatusNotDetermined
+            }
+        }
+    }
+    return %orig;
+}
+
+- (void)requestWhenInUseAuthorization {
+    if (is_tweak_active()) {
+        ZTSettings *s = [ZTSettings sharedSettings];
+        s.locationPermissionDetermined = YES;
+        [s saveSettings];
+        logAudit(@"TCC-LOCATION", @"📍 Zalo yêu cầu quyền Vị Trí (requestWhenInUseAuthorization) -> [Kích hoạt dialog Apple thật]");
+    }
+    %orig;
+}
+
+- (void)requestAlwaysAuthorization {
+    if (is_tweak_active()) {
+        ZTSettings *s = [ZTSettings sharedSettings];
+        s.locationPermissionDetermined = YES;
+        [s saveSettings];
+        logAudit(@"TCC-LOCATION", @"📍 Zalo yêu cầu quyền Vị Trí (requestAlwaysAuthorization) -> [Kích hoạt dialog Apple thật]");
+    }
+    %orig;
 }
 
 %end
