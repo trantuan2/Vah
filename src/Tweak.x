@@ -2776,11 +2776,13 @@ static void update_mach_clock_offsets(void) {
 }
 
 static uint64_t my_mach_continuous_time(void) {
-    if (s_in_mach_hook) {
-        return raw_hardware_arm64_ticks();
+    uint64_t realTicks = raw_hardware_arm64_ticks();
+    if (!is_tweak_active() || s_in_mach_hook) {
+        return (orig_mach_continuous_time && orig_mach_continuous_time != (void *)my_mach_continuous_time) ? orig_mach_continuous_time() : realTicks;
     }
-    if (!is_tweak_active()) {
-        return (orig_mach_continuous_time && orig_mach_continuous_time != (void *)my_mach_continuous_time) ? orig_mach_continuous_time() : raw_hardware_arm64_ticks();
+    void *c0 = __builtin_return_address(0);
+    if (!is_zalo_caller(c0)) {
+        return (orig_mach_continuous_time && orig_mach_continuous_time != (void *)my_mach_continuous_time) ? orig_mach_continuous_time() : realTicks;
     }
     s_in_mach_hook = YES;
     ZTSettings *s = [ZTSettings sharedSettings];
@@ -2788,21 +2790,22 @@ static uint64_t my_mach_continuous_time(void) {
         if (s_mach_cont_offset == 0 || s_last_mach_boot_sec != s.bootTimeSec || s_last_mach_enabled != s.spoofContinuousCPUClock) {
             update_mach_clock_offsets();
         }
-        uint64_t realTicks = raw_hardware_arm64_ticks();
         s_in_mach_hook = NO;
         return (uint64_t)((int64_t)realTicks + s_mach_cont_offset);
     }
     s_last_mach_enabled = s.spoofContinuousCPUClock;
     s_in_mach_hook = NO;
-    return (orig_mach_continuous_time && orig_mach_continuous_time != (void *)my_mach_continuous_time) ? orig_mach_continuous_time() : raw_hardware_arm64_ticks();
+    return (orig_mach_continuous_time && orig_mach_continuous_time != (void *)my_mach_continuous_time) ? orig_mach_continuous_time() : realTicks;
 }
 
 static uint64_t my_mach_absolute_time(void) {
-    if (s_in_mach_hook) {
-        return raw_hardware_arm64_ticks();
+    uint64_t realTicks = raw_hardware_arm64_ticks();
+    if (!is_tweak_active() || s_in_mach_hook) {
+        return (orig_mach_absolute_time && orig_mach_absolute_time != (void *)my_mach_absolute_time) ? orig_mach_absolute_time() : realTicks;
     }
-    if (!is_tweak_active()) {
-        return (orig_mach_absolute_time && orig_mach_absolute_time != (void *)my_mach_absolute_time) ? orig_mach_absolute_time() : raw_hardware_arm64_ticks();
+    void *c0 = __builtin_return_address(0);
+    if (!is_zalo_caller(c0)) {
+        return (orig_mach_absolute_time && orig_mach_absolute_time != (void *)my_mach_absolute_time) ? orig_mach_absolute_time() : realTicks;
     }
     s_in_mach_hook = YES;
     ZTSettings *s = [ZTSettings sharedSettings];
@@ -2810,7 +2813,6 @@ static uint64_t my_mach_absolute_time(void) {
         if (s_mach_abs_offset == 0 || s_last_mach_boot_sec != s.bootTimeSec || s_last_mach_enabled != s.spoofContinuousCPUClock) {
             update_mach_clock_offsets();
         }
-        uint64_t realTicks = raw_hardware_arm64_ticks();
         uint64_t absVal = (uint64_t)((int64_t)realTicks + s_mach_abs_offset);
         // Đảm bảo bất biến Apple Darwin Kernel: mach_continuous_time() >= mach_absolute_time()
         uint64_t contVal = (uint64_t)((int64_t)realTicks + s_mach_cont_offset);
@@ -2822,7 +2824,7 @@ static uint64_t my_mach_absolute_time(void) {
     }
     s_last_mach_enabled = s.spoofContinuousCPUClock;
     s_in_mach_hook = NO;
-    return (orig_mach_absolute_time && orig_mach_absolute_time != (void *)my_mach_absolute_time) ? orig_mach_absolute_time() : raw_hardware_arm64_ticks();
+    return (orig_mach_absolute_time && orig_mach_absolute_time != (void *)my_mach_absolute_time) ? orig_mach_absolute_time() : realTicks;
 }
 
 
@@ -3354,6 +3356,7 @@ static inline BOOL should_fake_stat_path(const char *path) {
         return NO;
     }
     if (strstr(path, "/var") ||
+        strstr(path, "/etc") ||
         strstr(path, "Containers") ||
         strstr(path, "Documents") ||
         strstr(path, "Library") ||
@@ -3361,6 +3364,7 @@ static inline BOOL should_fake_stat_path(const char *path) {
         strstr(path, "mobile") ||
         strstr(path, "/private") ||
         strcmp(path, "/") == 0 ||
+        strcmp(path, "/etc") == 0 ||
         strcmp(path, "/private") == 0 ||
         strcmp(path, "/private/var") == 0 ||
         strcmp(path, "/private/var/mobile") == 0 ||
