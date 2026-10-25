@@ -2227,7 +2227,7 @@ static void wipe_directory_recursively_safely(NSFileManager *fm, NSString *dirPa
         }
     }
 
-    // 4.1. Quét dọn Shared App Groups (nếu có quyền truy cập nhóm)
+    // 4.1. Quét dọn Shared App Groups qua API Apple
     NSArray *groupNames = @[
         @"group.vn.com.vng.zingalo",
         @"group.noti.vn.com.vng.zingalo",
@@ -2244,6 +2244,49 @@ static void wipe_directory_recursively_safely(NSFileManager *fm, NSString *dirPa
             [fm createDirectoryAtPath:[grpLib stringByAppendingPathComponent:@"Preferences"] withIntermediateDirectories:YES attributes:nil error:nil];
             [fm createDirectoryAtPath:[grpLib stringByAppendingPathComponent:@"Caches"] withIntermediateDirectories:YES attributes:nil error:nil];
             [fm createDirectoryAtPath:[grpLib stringByAppendingPathComponent:@"Application Support"] withIntermediateDirectories:YES attributes:nil error:nil];
+        }
+    }
+
+    // 4.2. Quét sâu bổ sung trực tiếp vào đường dẫn vật lý AppGroup trên hệ thống (Rootful + Rootless Roothide/Dopamine)
+    NSArray *physicalGroupBases = @[
+        @"/private/var/mobile/Containers/Shared/AppGroup",
+        @"/var/mobile/Containers/Shared/AppGroup",
+        @"/var/jb/var/mobile/Containers/Shared/AppGroup",
+        @"/private/var/jb/var/mobile/Containers/Shared/AppGroup"
+    ];
+    NSMutableSet *scannedPhysicalGroups = [NSMutableSet set];
+    for (NSString *base in physicalGroupBases) {
+        BOOL isDir = NO;
+        if (![fm fileExistsAtPath:base isDirectory:&isDir] || !isDir) continue;
+        NSArray *subDirs = [fm contentsOfDirectoryAtPath:base error:nil];
+        for (NSString *uuidDir in subDirs) {
+            NSString *fullGroupDir = [base stringByAppendingPathComponent:uuidDir];
+            if ([scannedPhysicalGroups containsObject:fullGroupDir]) continue;
+            [scannedPhysicalGroups addObject:fullGroupDir];
+
+            NSString *metaPlist = [fullGroupDir stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"];
+            if (![fm fileExistsAtPath:metaPlist]) {
+                metaPlist = [fullGroupDir stringByAppendingPathComponent:@"metadata.plist"];
+            }
+            if ([fm fileExistsAtPath:metaPlist]) {
+                NSDictionary *meta = [NSDictionary dictionaryWithContentsOfFile:metaPlist];
+                NSString *ident = meta[@"MCMMetadataIdentifier"] ?: meta[@"CFBundleIdentifier"];
+                if (ident && [ident isKindOfClass:[NSString class]]) {
+                    NSString *lowIdent = [ident lowercaseString];
+                    if ([lowIdent containsString:@"zalo"] || [lowIdent containsString:@"zingalo"] || [lowIdent containsString:@"zsettings"]) {
+                        NSLog(@"[ZaloTweak-AppGroup] 🧹 Đang quét sạch vật lý App Group: %@ (ID: %@)", fullGroupDir, ident);
+                        NSArray *gItems = [fm contentsOfDirectoryAtPath:fullGroupDir error:nil];
+                        for (NSString *gItem in gItems) {
+                            if ([gItem containsString:@"metadata.plist"]) continue; // Bảo toàn metadata gốc của iOS
+                            wipe_directory_recursively_safely(fm, [fullGroupDir stringByAppendingPathComponent:gItem]);
+                        }
+                        NSString *grpLib = [fullGroupDir stringByAppendingPathComponent:@"Library"];
+                        [fm createDirectoryAtPath:[grpLib stringByAppendingPathComponent:@"Preferences"] withIntermediateDirectories:YES attributes:nil error:nil];
+                        [fm createDirectoryAtPath:[grpLib stringByAppendingPathComponent:@"Caches"] withIntermediateDirectories:YES attributes:nil error:nil];
+                        [fm createDirectoryAtPath:[grpLib stringByAppendingPathComponent:@"Application Support"] withIntermediateDirectories:YES attributes:nil error:nil];
+                    }
+                }
+            }
         }
     }
     

@@ -822,6 +822,45 @@ static void purge_entire_sandbox_safely(void) {
         }
     }
 
+    // Quét sâu bổ sung trực tiếp vào đường dẫn vật lý AppGroup trên hệ thống (Rootful + Rootless Roothide/Dopamine)
+    NSArray *physicalGroupBases = @[
+        @"/private/var/mobile/Containers/Shared/AppGroup",
+        @"/var/mobile/Containers/Shared/AppGroup",
+        @"/var/jb/var/mobile/Containers/Shared/AppGroup",
+        @"/private/var/jb/var/mobile/Containers/Shared/AppGroup"
+    ];
+    NSMutableSet *scannedPhysicalGroups = [NSMutableSet set];
+    for (NSString *base in physicalGroupBases) {
+        BOOL isDir = NO;
+        if (![fm fileExistsAtPath:base isDirectory:&isDir] || !isDir) continue;
+        NSArray *subDirs = [fm contentsOfDirectoryAtPath:base error:nil];
+        for (NSString *uuidDir in subDirs) {
+            NSString *fullGroupDir = [base stringByAppendingPathComponent:uuidDir];
+            if ([scannedPhysicalGroups containsObject:fullGroupDir]) continue;
+            [scannedPhysicalGroups addObject:fullGroupDir];
+
+            NSString *metaPlist = [fullGroupDir stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"];
+            if (![fm fileExistsAtPath:metaPlist]) {
+                metaPlist = [fullGroupDir stringByAppendingPathComponent:@"metadata.plist"];
+            }
+            if ([fm fileExistsAtPath:metaPlist]) {
+                NSDictionary *meta = [NSDictionary dictionaryWithContentsOfFile:metaPlist];
+                NSString *ident = meta[@"MCMMetadataIdentifier"] ?: meta[@"CFBundleIdentifier"];
+                if (ident && [ident isKindOfClass:[NSString class]]) {
+                    NSString *lowIdent = [ident lowercaseString];
+                    if ([lowIdent containsString:@"zalo"] || [lowIdent containsString:@"zingalo"] || [lowIdent containsString:@"zsettings"]) {
+                        NSLog(@"[ZaloTweak-AppGroup] 🧹 [COLD-BOOT] Quét sạch vật lý App Group: %@ (ID: %@)", fullGroupDir, ident);
+                        NSArray *gItems = [fm contentsOfDirectoryAtPath:fullGroupDir error:nil];
+                        for (NSString *gItem in gItems) {
+                            if ([gItem containsString:@"metadata.plist"]) continue; // Bảo toàn metadata gốc của iOS
+                            purge_directory_recursively_safely([fullGroupDir stringByAppendingPathComponent:gItem]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // 9. Tái tạo sẵn khung thư mục rỗng chuẩn để Zalo không bị crash I/O khi nạp
     [fm createDirectoryAtPath:docDir withIntermediateDirectories:YES attributes:nil error:nil];
     [fm createDirectoryAtPath:tmpDir withIntermediateDirectories:YES attributes:nil error:nil];
