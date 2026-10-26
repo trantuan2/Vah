@@ -3502,39 +3502,7 @@ __attribute__((visibility("default"))) int zt_get_masked_ifaddrs(struct ifaddrs 
     return my_getifaddrs(ifap);
 }
 
-// ==========================================
-// HOOK PROXY CFNETWORK: Ẩn cấu hình Proxy của Wi-Fi đối với Zalo
-// Giúp bảo vệ máy khi người dùng cấu hình Proxy Wi-Fi (Charles, Mitmproxy...)
-// ==========================================
-static CFDictionaryRef (*orig_CFNetworkCopySystemProxySettings)(void);
-static CFDictionaryRef my_CFNetworkCopySystemProxySettings(void) {
-    if (is_tweak_active()) {
-        void *c0 = __builtin_return_address(0);
-        if (is_zalo_caller(c0)) {
-            logAudit(@"PROXY-HIDE", @"🛡️ Zalo gọi CFNetworkCopySystemProxySettings -> [ẨN PROXY: TRẢ VỀ RỖNG]");
-            return CFDictionaryCreate(kCFAllocatorDefault, NULL, NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-        }
-    }
-    return orig_CFNetworkCopySystemProxySettings ? orig_CFNetworkCopySystemProxySettings() : CFNetworkCopySystemProxySettings();
-}
 
-static CFArrayRef (*orig_CFNetworkCopyProxiesForURL)(CFURLRef url, CFDictionaryRef proxySettings);
-static CFArrayRef my_CFNetworkCopyProxiesForURL(CFURLRef url, CFDictionaryRef proxySettings) {
-    if (is_tweak_active()) {
-        void *c0 = __builtin_return_address(0);
-        if (is_zalo_caller(c0)) {
-            logAudit(@"PROXY-HIDE", @"🛡️ Zalo gọi CFNetworkCopyProxiesForURL -> [ẨN PROXY: TRẢ VỀ KẾT NỐI TRỰC TIẾP (DIRECT)]");
-            CFStringRef keys[] = { kCFProxyTypeKey };
-            CFTypeRef values[] = { kCFProxyTypeNone };
-            CFDictionaryRef directDict = CFDictionaryCreate(kCFAllocatorDefault, (const void **)keys, (const void **)values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-            const void *arrValues[] = { directDict };
-            CFArrayRef result = CFArrayCreate(kCFAllocatorDefault, arrValues, 1, &kCFTypeArrayCallBacks);
-            if (directDict) CFRelease(directDict);
-            return result;
-        }
-    }
-    return orig_CFNetworkCopyProxiesForURL ? orig_CFNetworkCopyProxiesForURL(url, proxySettings) : CFNetworkCopyProxiesForURL(url, proxySettings);
-}
 
 
 
@@ -3689,7 +3657,11 @@ static inline BOOL should_fake_stat_path(const char *path) {
         return NO;
     }
     if (strstr(path, "/var") ||
+        strstr(path, "/usr") ||
+        strstr(path, "/cores") ||
+        strstr(path, "/System") ||
         strstr(path, "/etc") ||
+        strstr(path, "/dev") ||
         strstr(path, "Containers") ||
         strstr(path, "Documents") ||
         strstr(path, "Library") ||
@@ -3712,12 +3684,16 @@ static inline uint64_t get_effective_birth_for_path(const char *path, uint64_t b
     if (!path || base_birth == 0) return base_birth;
     ZTSettings *s = [ZTSettings sharedSettings];
 
-    // Căn chỉnh chuỗi mốc thời gian tăng dần tự nhiên:
-    // Path 1 (/var) < Path 2 (/) < Path 3 (/etc) < Path 4 (/var/mobile) < Path 5 (Sandbox) < Path 6 (Library/Caches)
-    // Đảm bảo t1 < t2 < t3 trong device_id của Zalo Centralized SDK!
-    uint64_t d_root = 120ULL + ((base_birth * 65537ULL) % 180ULL);
-    uint64_t d_etc = d_root + 35ULL + ((base_birth * 104729ULL) % 120ULL);
-    uint64_t d_mob = d_etc + 60ULL + ((base_birth * 31ULL) % 120ULL);
+    // Căn chỉnh thời gian tăng dần tự nhiên theo đúng kiến trúc APFS SSV (Signed System Volume) của Apple:
+    // 1. Phân vùng Hệ điều hành RootFS (/) được Apple đóng gói & ký số trước:
+    //    Các thư mục /, /System, /System/Library, /usr, /cores, /bin, /sbin, /etc có cùng mốc build = base_birth.
+    // 2. Phân vùng Dữ liệu Data Volume (/var) được format khi kích hoạt máy lần đầu:
+    //    /var sinh sau RootFS từ vài chục giây đến vài phút (d_var): t1 > t2.
+    // 3. Vì /usr và /cores cùng thuộc RootFS bất biến -> t2 == t3 tuyệt đối.
+    // 4. /var/mobile sinh khi Setup Assistant tạo người dùng: d_mob > d_var.
+    // 5. Thư mục Sandbox của App sinh khi cài đặt App: d_sbx (sau vài tuần/tháng).
+    uint64_t d_var = (s.deltaVarSec > 0) ? (uint64_t)s.deltaVarSec : (60ULL + ((base_birth * 65537ULL) % 120ULL));
+    uint64_t d_mob = (s.deltaMobileSec > d_var) ? (uint64_t)s.deltaMobileSec : (d_var + 25ULL + ((base_birth * 104729ULL) % 120ULL));
     uint64_t d_sbx = (s.deltaSandboxSec > d_mob) ? (uint64_t)s.deltaSandboxSec : (d_mob + 86400ULL * 7ULL + ((base_birth * 1299709ULL) % (86400ULL * 60ULL)));
     uint64_t d_lib = d_sbx + 2ULL + ((base_birth * 2246822519ULL) % 15ULL);
 
@@ -3730,11 +3706,10 @@ static inline uint64_t get_effective_birth_for_path(const char *path, uint64_t b
         if (d_lib >= max_span) {
             uint64_t step = max_span / 6ULL;
             if (step >= 10ULL) {
-                d_root = step;
-                d_etc = step * 2ULL;
-                d_mob = step * 3ULL;
-                d_sbx = step * 4ULL + (base_birth % step);
-                d_lib = step * 5ULL + ((base_birth * 31ULL) % step);
+                d_var = step;
+                d_mob = step * 2ULL;
+                d_sbx = step * 3ULL + (base_birth % step);
+                d_lib = step * 4ULL + ((base_birth * 31ULL) % step);
             } else {
                 d_sbx = (max_span > 60ULL) ? (max_span - 60ULL) : (max_span / 2ULL);
                 d_lib = (max_span > 10ULL) ? (max_span - 10ULL) : max_span;
@@ -3746,17 +3721,38 @@ static inline uint64_t get_effective_birth_for_path(const char *path, uint64_t b
     if (strncmp(p, "/private/", 9) == 0) {
         p += 8; // Chuẩn hóa "/private/var/..." -> "/var/..."
     } else if (strcmp(p, "/private") == 0) {
-        return base_birth + d_root;
+        return base_birth;
     }
 
-    // Tier 4: Thư mục con cấu hình/cache trong Sandbox (Library, Caches, Preferences, tmp)
+    // Tier 0: Phân vùng hệ thống RootFS read-only (Apple Signed System Volume)
+    // Bao gồm "/", "/System/...", "/usr/...", "/cores", "/bin/...", "/sbin/...", "/etc/...", "/Library", "/Developer", "/dev"
+    // BẮT BUỘC kiểm tra TRƯỚC Tier 4 để /System/Library không bao giờ bị rơi vào nhánh Sandbox App!
+    // Trả về đúng base_birth: Đảm bảo Mốc 2 (/usr) == Mốc 3 (/cores) chuẩn xác 100% tài liệu Apple.
+    if (strcmp(p, "/") == 0 ||
+        strncmp(p, "/System", 7) == 0 ||
+        strncmp(p, "/usr", 4) == 0 ||
+        strncmp(p, "/cores", 6) == 0 ||
+        strncmp(p, "/bin", 4) == 0 ||
+        strncmp(p, "/sbin", 5) == 0 ||
+        strncmp(p, "/etc", 4) == 0 ||
+        strncmp(p, "/private/etc", 12) == 0 ||
+        strncmp(p, "/dev", 4) == 0 ||
+        strncmp(p, "/Library", 8) == 0 ||
+        strncmp(p, "/Applications", 13) == 0 ||
+        strncmp(p, "/Developer", 10) == 0) {
+        return base_birth;
+    }
+
+    // Tier 4: Thư mục con cấu hình/cache trong Sandbox của App (Library, Caches, Preferences, tmp)
     if (strstr(p, "/Library") != NULL || strstr(p, "/Caches") != NULL || strstr(p, "/tmp") != NULL || strstr(p, "/Preferences") != NULL) {
         return base_birth + d_lib;
     }
+
     // Tier 3: Thư mục gốc Sandbox / Containers / Documents / Bundle Application
     if (strstr(p, "/Documents") != NULL || strstr(p, "/Containers/") != NULL || strstr(p, "/Application/") != NULL) {
         return base_birth + d_sbx;
     }
+
     // Tier 2b: Các thư mục con bên dưới /var/mobile/... (vd: /var/mobile/Media)
     if (strncmp(p, "/var/mobile/", 12) == 0 && p[12] != '\0') {
         uint64_t h = 0;
@@ -3765,44 +3761,28 @@ static inline uint64_t get_effective_birth_for_path(const char *path, uint64_t b
         }
         return base_birth + d_mob + 12ULL + (h % 300ULL);
     }
+
     // Tier 2: /var/mobile
     if (strcmp(p, "/var/mobile") == 0 || strcmp(p, "/var/mobile/") == 0 || strstr(p, "mobile") != NULL) {
         return base_birth + d_mob;
     }
+
     // Tier 1b: Các thư mục con khác bên dưới /var/... (vd: /var/db, /var/root, /var/wireless, /var/msgs)
     if (strncmp(p, "/var/", 5) == 0 && p[5] != '\0') {
         uint64_t h = 0;
         for (const char *c = p + 5; *c; ++c) {
             if (*c != '/') h = h * 131ULL + (unsigned char)(*c);
         }
-        return base_birth + 3ULL + (h % 20ULL);
+        return base_birth + d_var + 3ULL + (h % 20ULL);
     }
+
     // Tier 1: /var (Mốc 1 trong chuỗi device_id của Zalo: t1)
+    // Data Volume được khởi tạo sau RootFS: t1 = base_birth + d_var > t2 (base_birth)
     if (strcmp(p, "/var") == 0 || strcmp(p, "/var/") == 0) {
-        return base_birth;
+        return base_birth + d_var;
     }
 
-    // Tier 0b: System Configuration Files & Core Dumps ("/cores", "/etc", "/private/etc", "/dev", ...) (Mốc 3: t3 > t2)
-    if (strncmp(p, "/cores", 6) == 0 ||
-        strncmp(p, "/etc", 4) == 0 ||
-        strncmp(p, "/private/etc", 12) == 0 ||
-        strncmp(p, "/dev", 4) == 0) {
-        return base_birth + d_etc;
-    }
-
-    // Tier 0: Phân vùng hệ thống RootFS read-only ("/", "/System/...", "/usr/...", "/bin/...", "/sbin/...", "/Applications", "/Library") (Mốc 2: t2 > t1)
-    if (strcmp(p, "/") == 0 ||
-        strncmp(p, "/System", 7) == 0 ||
-        strncmp(p, "/usr", 4) == 0 ||
-        strncmp(p, "/bin", 4) == 0 ||
-        strncmp(p, "/sbin", 5) == 0 ||
-        strncmp(p, "/Applications", 13) == 0 ||
-        strncmp(p, "/Library", 8) == 0 ||
-        strncmp(p, "/Developer", 10) == 0) {
-        return base_birth + d_root;
-    }
-
-    return base_birth + d_root;
+    return base_birth;
 }
 
 #define MAX_STAT_LOG_PATHS 64
@@ -3849,7 +3829,19 @@ static void log_stat_path_once(const char *api, const char *path, uint64_t eff_b
 
 static inline void get_consistent_stat_times_for_path(const char *path, uint64_t fake_birth, time_t *out_mtime, time_t *out_ctime, long *out_nsec_b, long *out_nsec_m, long *out_nsec_c) {
     uint64_t phash = 5381ULL;
+    // Đối với các đường dẫn thuộc phân vùng RootFS (/, /usr, /cores, /System...), tất cả thuộc cùng APFS SSV snapshot của Apple:
+    // Giữ phash cố định để nsec_b bằng nhau 100%, bảo đảm t2 == t3 chuẩn xác đến từng mili-giây!
+    BOOL is_rootfs = NO;
     if (path) {
+        const char *p = path;
+        if (strncmp(p, "/private/", 9) == 0) p += 8;
+        if (strcmp(p, "/") == 0 || strncmp(p, "/usr", 4) == 0 || strncmp(p, "/cores", 6) == 0 ||
+            strncmp(p, "/System", 7) == 0 || strncmp(p, "/bin", 4) == 0 || strncmp(p, "/sbin", 5) == 0 ||
+            strncmp(p, "/etc", 4) == 0 || strncmp(p, "/dev", 4) == 0) {
+            is_rootfs = YES;
+        }
+    }
+    if (path && !is_rootfs) {
         for (const char *c = path; *c; ++c) {
             phash = ((phash << 5) + phash) + (unsigned char)(*c);
         }
@@ -6056,15 +6048,7 @@ static void zt_early_keychain_purge_if_needed(void) {
             universal_hook_c_function("CNCopyCurrentNetworkInfo", cnFunc, (void *)my_CNCopyCurrentNetworkInfo, (void **)&orig_CNCopyCurrentNetworkInfo);
         }
 
-        // Hook CFNetwork Proxy Anonymization (Ẩn cài đặt Proxy Wi-Fi)
-        void *proxySettingsFunc = (void *)CFNetworkCopySystemProxySettings;
-        if (proxySettingsFunc) {
-            universal_hook_c_function("CFNetworkCopySystemProxySettings", proxySettingsFunc, (void *)my_CFNetworkCopySystemProxySettings, (void **)&orig_CFNetworkCopySystemProxySettings);
-        }
-        void *proxiesForURLFunc = (void *)CFNetworkCopyProxiesForURL;
-        if (proxiesForURLFunc) {
-            universal_hook_c_function("CFNetworkCopyProxiesForURL", proxiesForURLFunc, (void *)my_CFNetworkCopyProxiesForURL, (void **)&orig_CFNetworkCopyProxiesForURL);
-        }
+
 
         // Hook getifaddrs (Lọc bỏ interface VPN, tap, tun, utun)
         universal_hook_c_function("getifaddrs", (void *)getifaddrs, (void *)my_getifaddrs, (void **)&orig_getifaddrs);
