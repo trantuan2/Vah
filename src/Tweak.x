@@ -4710,14 +4710,9 @@ static NSData *get_or_create_spoofed_voip_token_data(void) {
                                 }
                                 if (topVC) {
                                     UIAlertController *dupAlert = [UIAlertController alertControllerWithTitle:@"⚠️ CẢNH BÁO NGUY HIỂM"
-                                                                                                      message:@"Token APNs từ Apple bị TRÙNG 100% với tài khoản trước vừa Wipe!
-
-"
-                                                                                                              @"• Nguyên nhân: Apple Gateway chưa kịp cấp Token mới.
-"
-                                                                                                              @"• Hậu quả: Nếu đăng ký bây giờ, Zalo sẽ khóa tài khoản ngay lập tức!
-
-"
+                                                                                                      message:@"Token APNs từ Apple bị TRÙNG 100% với tài khoản trước vừa Wipe!\n\n"
+                                                                                                              @"• Nguyên nhân: Apple Gateway chưa kịp cấp Token mới.\n"
+                                                                                                              @"• Hậu quả: Nếu đăng ký bây giờ, Zalo sẽ khóa tài khoản ngay lập tức!\n\n"
                                                                                                               @"👉 HÃY BẬT CHẾ ĐỘ MÁY BAY 10 GIÂY rồi tắt lại, hoặc Wipe lại từ Floating Menu."
                                                                                                preferredStyle:UIAlertControllerStyleAlert];
                                     [dupAlert addAction:[UIAlertAction actionWithTitle:@"Đã hiểu (Chờ đổi Token)" style:UIAlertActionStyleDestructive handler:nil]];
@@ -4726,10 +4721,7 @@ static NSData *get_or_create_spoofed_voip_token_data(void) {
                             });
                         } else {
                             statusStr = @"ROTATED_NEW";
-                            logAudit(@"APNS-STATUS", [NSString stringWithFormat:@"🟢 [THÀNH CÔNG] Token APNs ĐÃ ĐỔI MỚI HOÀN TOÀN!
-- Token Mới: %@
-- Token Cũ trước Wipe: %@
--> AN TOÀN TUYỆT ĐỐI ĐỂ ĐĂNG KÝ ACC MỚI!", tokenHex, lastWiped]);
+                            logAudit(@"APNS-STATUS", [NSString stringWithFormat:@"🟢 [THÀNH CÔNG] Token APNs ĐÃ ĐỔI MỚI HOÀN TOÀN!\n- Token Mới: %@\n- Token Cũ trước Wipe: %@\n-> AN TOÀN TUYỆT ĐỐI ĐỂ ĐĂNG KÝ ACC MỚI!", tokenHex, lastWiped]);
                         }
                     } else {
                         logAudit(@"APNS-STATUS", [NSString stringWithFormat:@"ℹ️ [ĐÃ BẮT TOKEN ĐẦU TIÊN] Token APNs hiện tại của máy: %@ (Đã lưu làm mốc. Hãy vào Settings bấm Wipe để bắt đầu chu trình đổi token).", tokenHex]);
