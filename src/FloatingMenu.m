@@ -63,17 +63,17 @@ static void zt_reset_tcc_and_notifications_system_level(void) {
             if ([[NSFileManager defaultManager] fileExistsAtPath:dbPath]) {
                 sqlite3 *db = NULL;
                 if (sql_open([dbPath UTF8String], &db) == 0 && db) {
-                    const char *sql = "DELETE FROM access WHERE client LIKE '%zingalo%' OR client LIKE '%vn.com.vng.zalo%' OR client LIKE '%com.vng.zalo%';";
+                    const char *sql = "DELETE FROM access WHERE client = 'vn.com.vng.zingalo' OR client LIKE 'vn.com.vng.zingalo%';";
                     char *err = NULL;
                     sql_exec(db, sql, NULL, NULL, &err);
                     sql_close(db);
-                    NSLog(@"[ZaloTweak-TCC] 🧹 Đã xóa sạch quyền TCC của Zalo trong %@", dbPath);
+                    NSLog(@"[ZaloTweak-TCC] 🧹 Đã xóa sạch quyền TCC của Zalo chính thức (vn.com.vng.zingalo) trong %@", dbPath);
                 }
             }
         }
     }
 
-    // 2. Xóa cấu hình quyền thông báo (UserNotifications)
+    // 2. Xóa cấu hình quyền thông báo (UserNotifications) của Zalo chính thức
     NSArray<NSString *> *notifDirs = @[
         @"/private/var/mobile/Library/UserNotifications",
         @"/var/mobile/Library/UserNotifications",
@@ -86,10 +86,10 @@ static void zt_reset_tcc_and_notifications_system_level(void) {
             NSArray *items = [fm contentsOfDirectoryAtPath:nDir error:nil];
             for (NSString *item in items) {
                 NSString *lower = [item lowercaseString];
-                if ([lower containsString:@"zingalo"] || [lower containsString:@"vng.zalo"] || [lower containsString:@"zalo"]) {
+                if ([lower containsString:@"vn.com.vng.zingalo"]) {
                     NSString *target = [nDir stringByAppendingPathComponent:item];
                     [fm removeItemAtPath:target error:nil];
-                    NSLog(@"[ZaloTweak-TCC] 🧹 Đã xóa cấu hình UserNotifications: %@", target);
+                    NSLog(@"[ZaloTweak-TCC] 🧹 Đã xóa cấu hình UserNotifications Zalo chính thức: %@", target);
                 }
             }
         }
