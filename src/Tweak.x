@@ -3034,6 +3034,11 @@ static void init_mach_clock_offsets_once(void) {
     });
 }
 
+static int s_zalo_cont_log_count = 0;
+static int s_sys_cont_log_count = 0;
+static int s_zalo_abs_log_count = 0;
+static int s_sys_abs_log_count = 0;
+
 static uint64_t my_mach_continuous_time(void) {
     uint64_t realTicks = raw_hardware_arm64_ticks();
     if (!is_tweak_active() || s_in_mach_anchor) {
@@ -3041,13 +3046,26 @@ static uint64_t my_mach_continuous_time(void) {
     }
     void *c0 = __builtin_return_address(0);
     if (!is_fast_zalo_caller(c0)) {
+        if (s_sys_cont_log_count < 3) {
+            s_sys_cont_log_count++;
+            s_in_mach_anchor = YES;
+            logAudit(@"CPU-CLOCK", [NSString stringWithFormat:@"🌐 [SYSTEM CALLER #%d] CFNetwork/Kernel gọi mach_continuous_time() từ %@ -> [GIỜ THẬT: %llu ticks]", s_sys_cont_log_count, format_caller_info(c0), realTicks]);
+            s_in_mach_anchor = NO;
+        }
         return (orig_mach_continuous_time && orig_mach_continuous_time != (void *)my_mach_continuous_time) ? orig_mach_continuous_time() : realTicks;
     }
     init_mach_clock_offsets_once();
     ZTSettings *s = [ZTSettings sharedSettings];
     if (s.spoofContinuousCPUClock && s.bootTimeSec > 0) {
+        uint64_t contVal = (uint64_t)((int64_t)realTicks + s_mach_cont_offset);
+        if (s_zalo_cont_log_count < 4) {
+            s_zalo_cont_log_count++;
+            s_in_mach_anchor = YES;
+            logAudit(@"CPU-CLOCK", [NSString stringWithFormat:@"🎯 [ZALO CALLER #%d] Zalo gọi mach_continuous_time() từ %@ -> [GIỜ FAKE ĐỒNG BỘ: %llu ticks (%.1fs)]", s_zalo_cont_log_count, format_caller_info(c0), contVal, (double)contVal / 24000000.0]);
+            s_in_mach_anchor = NO;
+        }
         // Tăng đơn điệu tuyệt đối thuận theo chip ARM64 phần cứng thật
-        return (uint64_t)((int64_t)realTicks + s_mach_cont_offset);
+        return contVal;
     }
     return (orig_mach_continuous_time && orig_mach_continuous_time != (void *)my_mach_continuous_time) ? orig_mach_continuous_time() : realTicks;
 }
@@ -3059,6 +3077,12 @@ static uint64_t my_mach_absolute_time(void) {
     }
     void *c0 = __builtin_return_address(0);
     if (!is_fast_zalo_caller(c0)) {
+        if (s_sys_abs_log_count < 3) {
+            s_sys_abs_log_count++;
+            s_in_mach_anchor = YES;
+            logAudit(@"CPU-CLOCK", [NSString stringWithFormat:@"🌐 [SYSTEM CALLER #%d] CFNetwork/Kernel gọi mach_absolute_time() từ %@ -> [GIỜ THẬT: %llu ticks]", s_sys_abs_log_count, format_caller_info(c0), realTicks]);
+            s_in_mach_anchor = NO;
+        }
         return (orig_mach_absolute_time && orig_mach_absolute_time != (void *)my_mach_absolute_time) ? orig_mach_absolute_time() : realTicks;
     }
     init_mach_clock_offsets_once();
@@ -3068,6 +3092,12 @@ static uint64_t my_mach_absolute_time(void) {
         uint64_t contVal = (uint64_t)((int64_t)realTicks + s_mach_cont_offset);
         if (absVal > contVal) {
             absVal = contVal;
+        }
+        if (s_zalo_abs_log_count < 4) {
+            s_zalo_abs_log_count++;
+            s_in_mach_anchor = YES;
+            logAudit(@"CPU-CLOCK", [NSString stringWithFormat:@"🎯 [ZALO CALLER #%d] Zalo gọi mach_absolute_time() từ %@ -> [GIỜ FAKE ĐỒNG BỘ: %llu ticks (%.1fs)]", s_zalo_abs_log_count, format_caller_info(c0), absVal, (double)absVal / 24000000.0]);
+            s_in_mach_anchor = NO;
         }
         // Tăng đơn điệu tuyệt đối thuận theo chip ARM64 phần cứng thật
         return absVal;
