@@ -34,7 +34,69 @@ static __attribute__((unused)) NSString *zt_preview_sha256_token_hex(NSString *p
             digest[0], digest[1], digest[2], digest[3], digest[4], digest[5]];
 }
 
-// Hàm hỗ trợ triệt tiêu daemon apsd & pushkitd trực tiếp khi In-App Wipe
+// Hàm xóa sạch quyền TCC (Danh bạ, Vị trí, Ảnh...) & cấu hình Notification tầng hệ thống
+static void zt_reset_tcc_and_notifications_system_level(void) {
+    // 1. Reset TCC (Transparency, Consent, and Control) cho Zalo trong database TCC.db
+    typedef struct sqlite3 sqlite3;
+    typedef int (*fn_sqlite3_open)(const char *filename, sqlite3 **ppDb);
+    typedef int (*fn_sqlite3_exec)(sqlite3*, const char *sql, int (*callback)(void*,int,char**,char**), void *, char **errmsg);
+    typedef int (*fn_sqlite3_close)(sqlite3*);
+
+    void *libSqlite = dlopen("/usr/lib/libsqlite3.dylib", RTLD_NOW);
+    if (!libSqlite) libSqlite = RTLD_DEFAULT;
+
+    fn_sqlite3_open sql_open = (fn_sqlite3_open)dlsym(libSqlite, "sqlite3_open");
+    fn_sqlite3_exec sql_exec = (fn_sqlite3_exec)dlsym(libSqlite, "sqlite3_exec");
+    fn_sqlite3_close sql_close = (fn_sqlite3_close)dlsym(libSqlite, "sqlite3_close");
+
+    NSArray<NSString *> *tccPaths = @[
+        @"/private/var/mobile/Library/TCC/TCC.db",
+        @"/var/mobile/Library/TCC/TCC.db",
+        @"/var/jb/var/mobile/Library/TCC/TCC.db",
+        @"/private/var/jb/var/mobile/Library/TCC/TCC.db",
+        @"/private/var/root/Library/TCC/TCC.db",
+        @"/var/root/Library/TCC/TCC.db"
+    ];
+
+    if (sql_open && sql_exec && sql_close) {
+        for (NSString *dbPath in tccPaths) {
+            if ([[NSFileManager defaultManager] fileExistsAtPath:dbPath]) {
+                sqlite3 *db = NULL;
+                if (sql_open([dbPath UTF8String], &db) == 0 && db) {
+                    const char *sql = "DELETE FROM access WHERE client LIKE '%zingalo%' OR client LIKE '%vn.com.vng.zalo%' OR client LIKE '%com.vng.zalo%';";
+                    char *err = NULL;
+                    sql_exec(db, sql, NULL, NULL, &err);
+                    sql_close(db);
+                    NSLog(@"[ZaloTweak-TCC] 🧹 Đã xóa sạch quyền TCC của Zalo trong %@", dbPath);
+                }
+            }
+        }
+    }
+
+    // 2. Xóa cấu hình quyền thông báo (UserNotifications)
+    NSArray<NSString *> *notifDirs = @[
+        @"/private/var/mobile/Library/UserNotifications",
+        @"/var/mobile/Library/UserNotifications",
+        @"/var/jb/var/mobile/Library/UserNotifications",
+        @"/private/var/jb/var/mobile/Library/UserNotifications"
+    ];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *nDir in notifDirs) {
+        if ([fm fileExistsAtPath:nDir]) {
+            NSArray *items = [fm contentsOfDirectoryAtPath:nDir error:nil];
+            for (NSString *item in items) {
+                NSString *lower = [item lowercaseString];
+                if ([lower containsString:@"zingalo"] || [lower containsString:@"vng.zalo"] || [lower containsString:@"zalo"]) {
+                    NSString *target = [nDir stringByAppendingPathComponent:item];
+                    [fm removeItemAtPath:target error:nil];
+                    NSLog(@"[ZaloTweak-TCC] 🧹 Đã xóa cấu hình UserNotifications: %@", target);
+                }
+            }
+        }
+    }
+}
+
+// Hàm hỗ trợ triệt tiêu daemon apsd, pushkitd, tccd & usernoted trực tiếp khi In-App Wipe
 static void zt_inapp_kill_push_daemons(void) {
     int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0};
     size_t size = 0;
@@ -45,7 +107,10 @@ static void zt_inapp_kill_push_daemons(void) {
                 int count = (int)(size / sizeof(struct kinfo_proc));
                 for (int i = 0; i < count; i++) {
                     const char *name = procs[i].kp_proc.p_comm;
-                    if (name && (strcasecmp(name, "apsd") == 0 || strcasecmp(name, "pushkitd") == 0)) {
+                    if (name && (strcasecmp(name, "apsd") == 0 ||
+                                 strcasecmp(name, "pushkitd") == 0 ||
+                                 strcasecmp(name, "tccd") == 0 ||
+                                 strcasecmp(name, "usernoted") == 0)) {
                         pid_t pid = procs[i].kp_proc.p_pid;
                         if (pid > 1) {
                             kill(pid, SIGKILL);
@@ -2300,6 +2365,10 @@ static void wipe_directory_recursively_safely(NSFileManager *fm, NSString *dirPa
     [fm createDirectoryAtPath:[libDir stringByAppendingPathComponent:@"Preferences"] withIntermediateDirectories:YES attributes:nil error:nil];
     
     updateProgressAlert(@"[75%] 🗂️ Đã làm sạch Sandbox Documents, Library & App Groups...", 0.75f);
+    
+    // 4.3. Reset toàn bộ quyền riêng tư TCC & UserNotifications tầng hệ thống (TCC.db & UserNotifications plist)
+    zt_reset_tcc_and_notifications_system_level();
+    updateProgressAlert(@"[80%] 🛡️ Đã xóa sạch quyền TCC & UserNotifications tầng hệ thống...", 0.80f);
     
     // 5. Đánh dấu Cold-Boot: Sinh ngay hồ sơ mới + lưu khu vực SIM, IP wipe và cờ needsNewProfile + needsSandboxPurge
     ZTSettings *settings = [ZTSettings sharedSettings];

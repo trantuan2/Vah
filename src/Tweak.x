@@ -2440,54 +2440,7 @@ static CFIndex my_ABAddressBookGetAuthorizationStatus(void) {
     return orig_ABAddressBookGetAuthorizationStatus ? orig_ABAddressBookGetAuthorizationStatus() : 0;
 }
 
-// ==========================================
-// HOOK USER NOTIFICATIONS: Giả lập chưa hỏi quyền thông báo sau khi Wipe
-// để Zalo tự động hiển thị lại Dialog xin quyền thông báo của iOS tự nhiên
-// ==========================================
-%hook UNNotificationSettings
-
-- (UNAuthorizationStatus)authorizationStatus {
-    if (is_tweak_active()) {
-        ZTSettings *s = [ZTSettings sharedSettings];
-        if (s.resetTCCPromptOnWipe && !s.notificationPermissionDetermined) {
-            void *c0 = __builtin_return_address(0);
-            if (is_zalo_caller(c0)) {
-                logAudit(@"TCC-NOTIF", @"🔔 Zalo kiểm tra quyền Thông Báo (UNNotificationSettings) -> [TRẢ VỀ NotDetermined (0) để Zalo hiện popup xin quyền]");
-                return UNAuthorizationStatusNotDetermined;
-            }
-        }
-    }
-    return %orig;
-}
-
-%end
-
-%hook UNUserNotificationCenter
-
-- (void)requestAuthorizationWithOptions:(UNAuthorizationOptions)options completionHandler:(void (^)(BOOL granted, NSError *error))completionHandler {
-    if (is_tweak_active()) {
-        logAudit(@"TCC-NOTIF", [NSString stringWithFormat:@"🔔 Zalo yêu cầu cấp quyền Thông Báo (requestAuthorizationWithOptions: 0x%lx) -> [Kích hoạt dialog Apple thật]", (unsigned long)options]);
-        void (^wrappedHandler)(BOOL, NSError *) = ^(BOOL granted, NSError *error) {
-            if (granted) {
-                ZTSettings *s = [ZTSettings sharedSettings];
-                s.notificationPermissionDetermined = YES;
-                [s saveSettings];
-                logAudit(@"TCC-NOTIF", @"✅ Người dùng đã bấm Cho phép thông báo -> Kích hoạt đăng ký APNs thật với Apple Gateway...");
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    [[UIApplication sharedApplication] registerForRemoteNotifications];
-                });
-            }
-            if (completionHandler) {
-                completionHandler(granted, error);
-            }
-        };
-        %orig(options, wrappedHandler);
-        return;
-    }
-    %orig(options, completionHandler);
-}
-
-%end
+// (Đã chuyển toàn bộ cơ chế Reset Quyền Thông Báo xuống TCC.db & UserNotifications tầng hệ thống, không can thiệp hook UNNotificationSettings để bảo toàn luồng đăng ký APNs của Apple)
 
 // ==========================================
 // HOOK TCC: PHOTOS (PHPhotoLibrary)
@@ -4708,24 +4661,7 @@ static NSData *get_or_create_spoofed_voip_token_data(void) {
 
 - (void)registerForRemoteNotifications {
     if (is_tweak_active()) {
-        static BOOL s_unregisteredOnceAfterWipe = NO;
-        if (!s_unregisteredOnceAfterWipe) {
-            NSString *prefPath = getConfigPath();
-            NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:prefPath];
-            if (!dict) dict = [NSDictionary dictionaryWithContentsOfFile:GLOBAL_PREFS_PATH];
-            if ([dict[@"wipePending"] boolValue] || [dict[@"needsAPNsUnregister"] boolValue]) {
-                s_unregisteredOnceAfterWipe = YES;
-
-                NSMutableDictionary *m = [dict mutableCopy];
-                m[@"wipePending"] = @(NO);
-                m[@"needsAPNsUnregister"] = @(NO);
-                [m writeToFile:prefPath atomically:YES];
-                [m writeToFile:GLOBAL_PREFS_PATH atomically:YES];
-                logAudit(@"APNS-ROTATE", @"🚀 [WIPE-ACTIVE] Đăng ký trực tiếp với Apple Gateway nhận Token APNs mới tinh...");
-                %orig;
-                return;
-            }
-        }
+        logAudit(@"APNS-REGISTER", @"📡 [APNS-REGISTER] Zalo đã gọi [[UIApplication sharedApplication] registerForRemoteNotifications] đến Apple Push Gateway (apsd)");
     }
     %orig;
 }
@@ -4738,74 +4674,103 @@ static NSData *get_or_create_spoofed_voip_token_data(void) {
             s_swappedDelClass = delClass;
             SEL regSel = @selector(application:didRegisterForRemoteNotificationsWithDeviceToken:);
             Method regMethod = class_getInstanceMethod(delClass, regSel);
+
+            void (^tokenProcessorBlock)(id, UIApplication *, NSData *) = ^(id self_del, UIApplication *app, NSData *realToken) {
+                if (realToken && [realToken length] > 0) {
+                    const unsigned char *tokenBytes = (const unsigned char *)[realToken bytes];
+                    NSUInteger tokenLen = [realToken length];
+                    NSMutableString *tokenHex = [NSMutableString stringWithCapacity:(tokenLen * 2)];
+                    for (NSUInteger i = 0; i < tokenLen; i++) {
+                        [tokenHex appendFormat:@"%02x", tokenBytes[i]];
+                    }
+
+                    ZTSettings *s = [ZTSettings sharedSettings];
+                    NSString *lastWiped = s.lastWipedAPNsToken;
+                    if (!lastWiped || lastWiped.length == 0) {
+                        NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:getConfigPath()];
+                        if (!dict) dict = [NSDictionary dictionaryWithContentsOfFile:GLOBAL_PREFS_PATH];
+                        lastWiped = dict[@"lastWipedAPNsToken"];
+                    }
+                    NSString *statusStr = @"INITIAL_CAPTURED";
+
+                    if (lastWiped && lastWiped.length > 0) {
+                        if ([tokenHex isEqualToString:lastWiped]) {
+                            statusStr = @"DUPLICATE";
+                            logAudit(@"APNS-STATUS", [NSString stringWithFormat:@"🔴 [CẢNH BÁO TRÙNG] Token APNs nhận từ Apple TRÙNG 100%% với Token trước Wipe: %@ -> TUYỆT ĐỐI CHƯA ĐĂNG KÝ ACC MỚI! Vui lòng bật/tắt Airplane Mode 10s hoặc Wipe lại!", tokenHex]);
+                            
+                            // SAFETY INTERLOCK: Hiển thị cảnh báo trực tiếp trên màn hình Zalo
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                UIWindow *keyWin = nil;
+                                for (UIWindow *w in [UIApplication sharedApplication].windows) {
+                                    if (w.isKeyWindow || w.rootViewController) { keyWin = w; break; }
+                                }
+                                UIViewController *topVC = keyWin.rootViewController;
+                                while (topVC.presentedViewController) {
+                                    topVC = topVC.presentedViewController;
+                                }
+                                if (topVC) {
+                                    UIAlertController *dupAlert = [UIAlertController alertControllerWithTitle:@"⚠️ CẢNH BÁO NGUY HIỂM"
+                                                                                                      message:@"Token APNs từ Apple bị TRÙNG 100% với tài khoản trước vừa Wipe!
+
+"
+                                                                                                              @"• Nguyên nhân: Apple Gateway chưa kịp cấp Token mới.
+"
+                                                                                                              @"• Hậu quả: Nếu đăng ký bây giờ, Zalo sẽ khóa tài khoản ngay lập tức!
+
+"
+                                                                                                              @"👉 HÃY BẬT CHẾ ĐỘ MÁY BAY 10 GIÂY rồi tắt lại, hoặc Wipe lại từ Floating Menu."
+                                                                                               preferredStyle:UIAlertControllerStyleAlert];
+                                    [dupAlert addAction:[UIAlertAction actionWithTitle:@"Đã hiểu (Chờ đổi Token)" style:UIAlertActionStyleDestructive handler:nil]];
+                                    [topVC presentViewController:dupAlert animated:YES completion:nil];
+                                }
+                            });
+                        } else {
+                            statusStr = @"ROTATED_NEW";
+                            logAudit(@"APNS-STATUS", [NSString stringWithFormat:@"🟢 [THÀNH CÔNG] Token APNs ĐÃ ĐỔI MỚI HOÀN TOÀN!
+- Token Mới: %@
+- Token Cũ trước Wipe: %@
+-> AN TOÀN TUYỆT ĐỐI ĐỂ ĐĂNG KÝ ACC MỚI!", tokenHex, lastWiped]);
+                        }
+                    } else {
+                        logAudit(@"APNS-STATUS", [NSString stringWithFormat:@"ℹ️ [ĐÃ BẮT TOKEN ĐẦU TIÊN] Token APNs hiện tại của máy: %@ (Đã lưu làm mốc. Hãy vào Settings bấm Wipe để bắt đầu chu trình đổi token).", tokenHex]);
+                    }
+
+                    s.currentAPNsToken = tokenHex;
+                    s.lastKnownAPNsToken = tokenHex;
+                    s.apnsRotatedStatus = statusStr;
+                    [s saveSettings];
+                    chmod([GLOBAL_PREFS_PATH UTF8String], 0666);
+                    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), CFSTR("com.sonhu.zalotweak/settingschanged"), NULL, NULL, YES);
+                }
+            };
+
             if (regMethod) {
                 typedef void (*OrigDidRegIMP)(id, SEL, UIApplication *, NSData *);
                 OrigDidRegIMP origImp = (OrigDidRegIMP)method_getImplementation(regMethod);
                 IMP customRegImp = imp_implementationWithBlock(^(id self_del, UIApplication *app, NSData *realToken) {
-                    if (realToken && [realToken length] > 0) {
-                        const unsigned char *tokenBytes = (const unsigned char *)[realToken bytes];
-                        NSUInteger tokenLen = [realToken length];
-                        NSMutableString *tokenHex = [NSMutableString stringWithCapacity:(tokenLen * 2)];
-                        for (NSUInteger i = 0; i < tokenLen; i++) {
-                            [tokenHex appendFormat:@"%02x", tokenBytes[i]];
-                        }
-
-                        ZTSettings *s = [ZTSettings sharedSettings];
-                        NSString *lastWiped = s.lastWipedAPNsToken;
-                        if (!lastWiped || lastWiped.length == 0) {
-                            NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:getConfigPath()];
-                            if (!dict) dict = [NSDictionary dictionaryWithContentsOfFile:GLOBAL_PREFS_PATH];
-                            lastWiped = dict[@"lastWipedAPNsToken"];
-                        }
-                        NSString *statusStr = @"INITIAL_CAPTURED";
-
-                        if (lastWiped && lastWiped.length > 0) {
-                            if ([tokenHex isEqualToString:lastWiped]) {
-                                statusStr = @"DUPLICATE";
-                                logAudit(@"APNS-STATUS", [NSString stringWithFormat:@"🔴 [CẢNH BÁO TRÙNG] Token APNs nhận từ Apple TRÙNG 100%% với Token trước Wipe: %@ -> TUYỆT ĐỐI CHƯA ĐĂNG KÝ ACC MỚI! Vui lòng bật/tắt Airplane Mode 10s hoặc Wipe lại!", tokenHex]);
-                                
-                                // SAFETY INTERLOCK: Hiển thị cảnh báo trực tiếp trên màn hình Zalo
-                                dispatch_async(dispatch_get_main_queue(), ^{
-                                    UIWindow *keyWin = nil;
-                                    for (UIWindow *w in [UIApplication sharedApplication].windows) {
-                                        if (w.isKeyWindow || w.rootViewController) { keyWin = w; break; }
-                                    }
-                                    UIViewController *topVC = keyWin.rootViewController;
-                                    while (topVC.presentedViewController) {
-                                        topVC = topVC.presentedViewController;
-                                    }
-                                    if (topVC) {
-                                        UIAlertController *dupAlert = [UIAlertController alertControllerWithTitle:@"⚠️ CẢNH BÁO NGUY HIỂM"
-                                                                                                          message:@"Token APNs từ Apple bị TRÙNG 100% với tài khoản trước vừa Wipe!\n\n"
-                                                                                                                  @"• Nguyên nhân: Apple Gateway chưa kịp cấp Token mới.\n"
-                                                                                                                  @"• Hậu quả: Nếu đăng ký bây giờ, Zalo sẽ khóa tài khoản ngay lập tức!\n\n"
-                                                                                                                  @"👉 HÃY BẬT CHẾ ĐỘ MÁY BAY 10 GIÂY rồi tắt lại, hoặc Wipe lại từ Floating Menu."
-                                                                                                   preferredStyle:UIAlertControllerStyleAlert];
-                                        [dupAlert addAction:[UIAlertAction actionWithTitle:@"Đã hiểu (Chờ đổi Token)" style:UIAlertActionStyleDestructive handler:nil]];
-                                        [topVC presentViewController:dupAlert animated:YES completion:nil];
-                                    }
-                                });
-                            } else {
-                                statusStr = @"ROTATED_NEW";
-                                logAudit(@"APNS-STATUS", [NSString stringWithFormat:@"🟢 [THÀNH CÔNG] Token APNs ĐÃ ĐỔI MỚI HOÀN TOÀN!\n- Token Mới: %@\n- Token Cũ trước Wipe: %@\n-> AN TOÀN TUYỆT ĐỐI ĐỂ ĐĂNG KÝ ACC MỚI!", tokenHex, lastWiped]);
-                            }
-                        } else {
-                            logAudit(@"APNS-STATUS", [NSString stringWithFormat:@"ℹ️ [ĐÃ BẮT TOKEN ĐẦU TIÊN] Token APNs hiện tại của máy: %@ (Đã lưu làm mốc. Hãy vào Settings bấm Wipe để bắt đầu chu trình đổi token).", tokenHex]);
-                        }
-
-                        s.currentAPNsToken = tokenHex;
-                        s.lastKnownAPNsToken = tokenHex;
-                        s.apnsRotatedStatus = statusStr;
-                        [s saveSettings];
-                        chmod([GLOBAL_PREFS_PATH UTF8String], 0666);
-                        CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), CFSTR("com.sonhu.zalotweak/settingschanged"), NULL, NULL, YES);
-
-                    }
+                    tokenProcessorBlock(self_del, app, realToken);
                     if (origImp) {
                         origImp(self_del, regSel, app, realToken);
                     }
                 });
                 method_setImplementation(regMethod, customRegImp);
+            } else {
+                IMP customRegImp = imp_implementationWithBlock(^(id self_del, UIApplication *app, NSData *realToken) {
+                    tokenProcessorBlock(self_del, app, realToken);
+                });
+                class_addMethod(delClass, regSel, customRegImp, "v@:@@");
+            }
+
+            // Tự động kết nối Apple Push Gateway để nhận APNs Token mới tinh sau khi Wipe
+            static dispatch_once_t s_autoApnsOnce;
+            dispatch_once(&s_autoApnsOnce, ^{
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    if (is_tweak_active()) {
+                        logAudit(@"APNS-REGISTER", @"🚀 [AUTO-APNS] Tự động kích hoạt registerForRemoteNotifications kết nối Apple Push Gateway...");
+                        [[UIApplication sharedApplication] registerForRemoteNotifications];
+                    }
+                });
+            });
             }
 
             SEL bgSel = @selector(applicationDidEnterBackground:);
