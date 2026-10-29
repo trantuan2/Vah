@@ -2946,78 +2946,67 @@ static inline uint64_t raw_hardware_arm64_ticks(void) {
 
 static int64_t s_mach_cont_offset = 0;
 static int64_t s_mach_abs_offset = 0;
-static uint64_t s_last_mach_boot_sec = 0;
-static BOOL s_last_mach_enabled = NO;
-static __thread BOOL s_in_mach_hook = NO;
+static dispatch_once_t s_mach_anchor_once;
 
 static uint64_t (*orig_mach_continuous_time)(void);
 static uint64_t (*orig_mach_absolute_time)(void);
 
-static void update_mach_clock_offsets(void) {
-    ZTSettings *s = [ZTSettings sharedSettings];
-    double contSec = 0.0, awakeSec = 0.0;
-    get_consistent_uptimes(&contSec, &awakeSec);
+static void init_mach_clock_offsets_once(void) {
+    dispatch_once(&s_mach_anchor_once, ^{
+        ZTSettings *s = [ZTSettings sharedSettings];
+        if (s.spoofContinuousCPUClock && s.bootTimeSec > 0) {
+            double contSec = 0.0, awakeSec = 0.0;
+            get_consistent_uptimes(&contSec, &awakeSec);
 
-    uint64_t targetContTicks = seconds_to_mach_ticks(contSec);
-    uint64_t targetAbsTicks = seconds_to_mach_ticks(awakeSec);
+            uint64_t targetContTicks = seconds_to_mach_ticks(contSec);
+            uint64_t targetAbsTicks = seconds_to_mach_ticks(awakeSec);
 
-    uint64_t realCont = raw_hardware_arm64_ticks();
+            uint64_t realCont = raw_hardware_arm64_ticks();
 
-    s_mach_cont_offset = (int64_t)targetContTicks - (int64_t)realCont;
-    s_mach_abs_offset = (int64_t)targetAbsTicks - (int64_t)realCont;
-    s_last_mach_boot_sec = s.bootTimeSec;
-    s_last_mach_enabled = s.spoofContinuousCPUClock;
+            // Neo mốc cố định 1 lần duy nhất trong toàn bộ vòng đời ứng dụng
+            // Đảm bảo không bao giờ bị tính toán lại giữa chừng gây giật lùi nhịp CPU!
+            s_mach_cont_offset = (int64_t)targetContTicks - (int64_t)realCont;
+            s_mach_abs_offset = (int64_t)targetAbsTicks - (int64_t)realCont;
+
+            // Bất biến Darwin Kernel: continuous_time >= absolute_time
+            if (s_mach_abs_offset > s_mach_cont_offset) {
+                s_mach_abs_offset = s_mach_cont_offset;
+            }
+            logAudit(@"CPU-CLOCK", [NSString stringWithFormat:@"⏱️ [MACH-ANCHOR] Neo xung nhịp CPU cố định 1 chiều: ContOffset=%lld, AbsOffset=%lld | ContSec=%.1fs, AwakeSec=%.1fs", s_mach_cont_offset, s_mach_abs_offset, contSec, awakeSec]);
+        }
+    });
 }
 
 static uint64_t my_mach_continuous_time(void) {
     uint64_t realTicks = raw_hardware_arm64_ticks();
-    if (!is_tweak_active() || s_in_mach_hook) {
+    if (!is_tweak_active()) {
         return (orig_mach_continuous_time && orig_mach_continuous_time != (void *)my_mach_continuous_time) ? orig_mach_continuous_time() : realTicks;
     }
-    void *c0 = __builtin_return_address(0);
-    if (!is_zalo_caller(c0)) {
-        return (orig_mach_continuous_time && orig_mach_continuous_time != (void *)my_mach_continuous_time) ? orig_mach_continuous_time() : realTicks;
-    }
-    s_in_mach_hook = YES;
+    init_mach_clock_offsets_once();
     ZTSettings *s = [ZTSettings sharedSettings];
     if (s.spoofContinuousCPUClock && s.bootTimeSec > 0) {
-        if (s_mach_cont_offset == 0 || s_last_mach_boot_sec != s.bootTimeSec || s_last_mach_enabled != s.spoofContinuousCPUClock) {
-            update_mach_clock_offsets();
-        }
-        s_in_mach_hook = NO;
+        // Tăng đơn điệu tuyệt đối thuận theo chip ARM64 phần cứng thật
         return (uint64_t)((int64_t)realTicks + s_mach_cont_offset);
     }
-    s_last_mach_enabled = s.spoofContinuousCPUClock;
-    s_in_mach_hook = NO;
     return (orig_mach_continuous_time && orig_mach_continuous_time != (void *)my_mach_continuous_time) ? orig_mach_continuous_time() : realTicks;
 }
 
 static uint64_t my_mach_absolute_time(void) {
     uint64_t realTicks = raw_hardware_arm64_ticks();
-    if (!is_tweak_active() || s_in_mach_hook) {
+    if (!is_tweak_active()) {
         return (orig_mach_absolute_time && orig_mach_absolute_time != (void *)my_mach_absolute_time) ? orig_mach_absolute_time() : realTicks;
     }
-    void *c0 = __builtin_return_address(0);
-    if (!is_zalo_caller(c0)) {
-        return (orig_mach_absolute_time && orig_mach_absolute_time != (void *)my_mach_absolute_time) ? orig_mach_absolute_time() : realTicks;
-    }
-    s_in_mach_hook = YES;
+    init_mach_clock_offsets_once();
     ZTSettings *s = [ZTSettings sharedSettings];
     if (s.spoofContinuousCPUClock && s.bootTimeSec > 0) {
-        if (s_mach_abs_offset == 0 || s_last_mach_boot_sec != s.bootTimeSec || s_last_mach_enabled != s.spoofContinuousCPUClock) {
-            update_mach_clock_offsets();
-        }
         uint64_t absVal = (uint64_t)((int64_t)realTicks + s_mach_abs_offset);
-        // Đảm bảo bất biến Apple Darwin Kernel: mach_continuous_time() >= mach_absolute_time()
         uint64_t contVal = (uint64_t)((int64_t)realTicks + s_mach_cont_offset);
         if (absVal > contVal) {
             absVal = contVal;
         }
-        s_in_mach_hook = NO;
+        // Tăng đơn điệu tuyệt đối thuận theo chip ARM64 phần cứng thật
         return absVal;
     }
-    s_last_mach_enabled = s.spoofContinuousCPUClock;
-    s_in_mach_hook = NO;
     return (orig_mach_absolute_time && orig_mach_absolute_time != (void *)my_mach_absolute_time) ? orig_mach_absolute_time() : realTicks;
 }
 
@@ -3453,6 +3442,40 @@ static int my_getifaddrs(struct ifaddrs **ifap) {
 
 __attribute__((visibility("default"))) int zt_get_masked_ifaddrs(struct ifaddrs **ifap) {
     return my_getifaddrs(ifap);
+}
+
+// ==========================================
+// HOOK PROXY CFNETWORK: Ẩn cấu hình Proxy của Wi-Fi đối với Zalo
+// Giúp bảo vệ máy khi người dùng cấu hình Proxy Wi-Fi (Charles, Mitmproxy, Proxy dân cư...)
+// ==========================================
+static CFDictionaryRef (*orig_CFNetworkCopySystemProxySettings)(void);
+static CFDictionaryRef my_CFNetworkCopySystemProxySettings(void) {
+    if (is_tweak_active()) {
+        void *c0 = __builtin_return_address(0);
+        if (is_zalo_caller(c0)) {
+            logAudit(@"PROXY-HIDE", @"🛡️ Zalo gọi CFNetworkCopySystemProxySettings -> [ẨN PROXY: TRẢ VỀ RỖNG]");
+            return CFDictionaryCreate(kCFAllocatorDefault, NULL, NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        }
+    }
+    return orig_CFNetworkCopySystemProxySettings ? orig_CFNetworkCopySystemProxySettings() : CFNetworkCopySystemProxySettings();
+}
+
+static CFArrayRef (*orig_CFNetworkCopyProxiesForURL)(CFURLRef url, CFDictionaryRef proxySettings);
+static CFArrayRef my_CFNetworkCopyProxiesForURL(CFURLRef url, CFDictionaryRef proxySettings) {
+    if (is_tweak_active()) {
+        void *c0 = __builtin_return_address(0);
+        if (is_zalo_caller(c0)) {
+            logAudit(@"PROXY-HIDE", @"🛡️ Zalo gọi CFNetworkCopyProxiesForURL -> [ẨN PROXY: TRẢ VỀ KẾT NỐI TRỰC TIẾP (DIRECT)]");
+            CFStringRef keys[] = { kCFProxyTypeKey };
+            CFTypeRef values[] = { kCFProxyTypeNone };
+            CFDictionaryRef directDict = CFDictionaryCreate(kCFAllocatorDefault, (const void **)keys, (const void **)values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+            const void *arrValues[] = { directDict };
+            CFArrayRef result = CFArrayCreate(kCFAllocatorDefault, arrValues, 1, &kCFTypeArrayCallBacks);
+            if (directDict) CFRelease(directDict);
+            return result;
+        }
+    }
+    return orig_CFNetworkCopyProxiesForURL ? orig_CFNetworkCopyProxiesForURL(url, proxySettings) : CFNetworkCopyProxiesForURL(url, proxySettings);
 }
 
 
@@ -4753,17 +4776,6 @@ static NSData *get_or_create_spoofed_voip_token_data(void) {
                 class_addMethod(delClass, regSel, customRegImp, "v@:@@");
             }
 
-            // Tự động kết nối Apple Push Gateway để nhận APNs Token mới tinh sau khi Wipe
-            static dispatch_once_t s_autoApnsOnce;
-            dispatch_once(&s_autoApnsOnce, ^{
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    if (is_tweak_active()) {
-                        logAudit(@"APNS-REGISTER", @"🚀 [AUTO-APNS] Tự động kích hoạt registerForRemoteNotifications kết nối Apple Push Gateway...");
-                        [[UIApplication sharedApplication] registerForRemoteNotifications];
-                    }
-                });
-            });
-
             SEL bgSel = @selector(applicationDidEnterBackground:);
             Method bgMethod = class_getInstanceMethod(delClass, bgSel);
             if (bgMethod) {
@@ -6002,6 +6014,16 @@ static void zt_early_keychain_purge_if_needed(void) {
         void *cnFunc = (void *)CNCopyCurrentNetworkInfo;
         if (cnFunc) {
             universal_hook_c_function("CNCopyCurrentNetworkInfo", cnFunc, (void *)my_CNCopyCurrentNetworkInfo, (void **)&orig_CNCopyCurrentNetworkInfo);
+        }
+
+        // Hook CFNetwork Proxy Anonymization (Ẩn cài đặt Proxy Wi-Fi)
+        void *proxySettingsFunc = (void *)CFNetworkCopySystemProxySettings;
+        if (proxySettingsFunc) {
+            universal_hook_c_function("CFNetworkCopySystemProxySettings", proxySettingsFunc, (void *)my_CFNetworkCopySystemProxySettings, (void **)&orig_CFNetworkCopySystemProxySettings);
+        }
+        void *proxiesForURLFunc = (void *)CFNetworkCopyProxiesForURL;
+        if (proxiesForURLFunc) {
+            universal_hook_c_function("CFNetworkCopyProxiesForURL", proxiesForURLFunc, (void *)my_CFNetworkCopyProxiesForURL, (void **)&orig_CFNetworkCopyProxiesForURL);
         }
 
 
