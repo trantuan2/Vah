@@ -3451,39 +3451,7 @@ __attribute__((visibility("default"))) int zt_get_masked_ifaddrs(struct ifaddrs 
     return my_getifaddrs(ifap);
 }
 
-// ==========================================
-// HOOK PROXY CFNETWORK: Ẩn cấu hình Proxy của Wi-Fi đối với Zalo
-// Giúp bảo vệ máy khi người dùng cấu hình Proxy Wi-Fi (Charles, Mitmproxy, Proxy dân cư...)
-// ==========================================
-static CFDictionaryRef (*orig_CFNetworkCopySystemProxySettings)(void);
-static CFDictionaryRef my_CFNetworkCopySystemProxySettings(void) {
-    if (is_tweak_active()) {
-        void *c0 = __builtin_return_address(0);
-        if (is_zalo_caller(c0)) {
-            logAudit(@"PROXY-HIDE", @"🛡️ Zalo gọi CFNetworkCopySystemProxySettings -> [ẨN PROXY: TRẢ VỀ RỖNG]");
-            return CFDictionaryCreate(kCFAllocatorDefault, NULL, NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-        }
-    }
-    return orig_CFNetworkCopySystemProxySettings ? orig_CFNetworkCopySystemProxySettings() : CFNetworkCopySystemProxySettings();
-}
 
-static CFArrayRef (*orig_CFNetworkCopyProxiesForURL)(CFURLRef url, CFDictionaryRef proxySettings);
-static CFArrayRef my_CFNetworkCopyProxiesForURL(CFURLRef url, CFDictionaryRef proxySettings) {
-    if (is_tweak_active()) {
-        void *c0 = __builtin_return_address(0);
-        if (is_zalo_caller(c0)) {
-            logAudit(@"PROXY-HIDE", @"🛡️ Zalo gọi CFNetworkCopyProxiesForURL -> [ẨN PROXY: TRẢ VỀ KẾT NỐI TRỰC TIẾP (DIRECT)]");
-            CFStringRef keys[] = { kCFProxyTypeKey };
-            CFTypeRef values[] = { kCFProxyTypeNone };
-            CFDictionaryRef directDict = CFDictionaryCreate(kCFAllocatorDefault, (const void **)keys, (const void **)values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-            const void *arrValues[] = { directDict };
-            CFArrayRef result = CFArrayCreate(kCFAllocatorDefault, arrValues, 1, &kCFTypeArrayCallBacks);
-            if (directDict) CFRelease(directDict);
-            return result;
-        }
-    }
-    return orig_CFNetworkCopyProxiesForURL ? orig_CFNetworkCopyProxiesForURL(url, proxySettings) : CFNetworkCopyProxiesForURL(url, proxySettings);
-}
 
 
 
@@ -6021,16 +5989,6 @@ static void zt_early_keychain_purge_if_needed(void) {
         void *cnFunc = (void *)CNCopyCurrentNetworkInfo;
         if (cnFunc) {
             universal_hook_c_function("CNCopyCurrentNetworkInfo", cnFunc, (void *)my_CNCopyCurrentNetworkInfo, (void **)&orig_CNCopyCurrentNetworkInfo);
-        }
-
-        // Hook CFNetwork Proxy Anonymization (Ẩn cài đặt Proxy Wi-Fi)
-        void *proxySettingsFunc = (void *)CFNetworkCopySystemProxySettings;
-        if (proxySettingsFunc) {
-            universal_hook_c_function("CFNetworkCopySystemProxySettings", proxySettingsFunc, (void *)my_CFNetworkCopySystemProxySettings, (void **)&orig_CFNetworkCopySystemProxySettings);
-        }
-        void *proxiesForURLFunc = (void *)CFNetworkCopyProxiesForURL;
-        if (proxiesForURLFunc) {
-            universal_hook_c_function("CFNetworkCopyProxiesForURL", proxiesForURLFunc, (void *)my_CFNetworkCopyProxiesForURL, (void **)&orig_CFNetworkCopyProxiesForURL);
         }
 
 
