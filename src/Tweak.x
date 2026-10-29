@@ -4771,7 +4771,6 @@ static NSData *get_or_create_spoofed_voip_token_data(void) {
                     }
                 });
             });
-            }
 
             SEL bgSel = @selector(applicationDidEnterBackground:);
             Method bgMethod = class_getInstanceMethod(delClass, bgSel);
