@@ -7,6 +7,7 @@
 #import <CFNetwork/CFNetwork.h>
 #import <SystemConfiguration/CaptiveNetwork.h>
 #import <mach-o/dyld.h>
+#import <mach-o/loader.h>
 #import <sys/sysctl.h>
 #import <sys/utsname.h>
 #import <sys/stat.h>
@@ -2943,6 +2944,60 @@ static inline uint64_t raw_hardware_arm64_ticks(void) {
 #endif
 }
 
+typedef struct {
+    uintptr_t start;
+    uintptr_t end;
+} ZTMemoryRange;
+
+#define MAX_ZALO_RANGES 16
+static ZTMemoryRange s_zalo_code_ranges[MAX_ZALO_RANGES];
+static size_t s_zalo_code_ranges_count = 0;
+static dispatch_once_t s_zalo_ranges_once;
+
+static void init_zalo_code_ranges(void) {
+    dispatch_once(&s_zalo_ranges_once, ^{
+        uint32_t count = _dyld_image_count();
+        for (uint32_t i = 0; i < count; i++) {
+            const char *name = _dyld_get_image_name(i);
+            if (!name) continue;
+            if (strstr(name, "Zalo.app") || strstr(name, "ZADesignSystem") || strstr(name, "ZDK") || strstr(name, "zingalo")) {
+                const struct mach_header *header = _dyld_get_image_header(i);
+                intptr_t slide = _dyld_get_image_vmaddr_slide(i);
+                if (!header) continue;
+
+                uintptr_t cur = (uintptr_t)header;
+                const struct load_command *cmd = (const struct load_command *)(cur + (header->magic == MH_MAGIC_64 ? sizeof(struct mach_header_64) : sizeof(struct mach_header)));
+                for (uint32_t c = 0; c < header->ncmds; c++) {
+                    if (cmd->cmd == LC_SEGMENT_64) {
+                        const struct segment_command_64 *seg = (const struct segment_command_64 *)cmd;
+                        if (strcmp(seg->segname, "__TEXT") == 0) {
+                            if (s_zalo_code_ranges_count < MAX_ZALO_RANGES) {
+                                s_zalo_code_ranges[s_zalo_code_ranges_count].start = (uintptr_t)seg->vmaddr + slide;
+                                s_zalo_code_ranges[s_zalo_code_ranges_count].end = s_zalo_code_ranges[s_zalo_code_ranges_count].start + seg->vmsize;
+                                s_zalo_code_ranges_count++;
+                            }
+                            break;
+                        }
+                    }
+                    cmd = (const struct load_command *)((uintptr_t)cmd + cmd->cmdsize);
+                }
+            }
+        }
+    });
+}
+
+static inline BOOL is_fast_zalo_caller(const void *addr) {
+    if (!addr) return NO;
+    init_zalo_code_ranges();
+    uintptr_t a = (uintptr_t)addr;
+    for (size_t i = 0; i < s_zalo_code_ranges_count; i++) {
+        if (a >= s_zalo_code_ranges[i].start && a < s_zalo_code_ranges[i].end) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
 static int64_t s_mach_cont_offset = 0;
 static int64_t s_mach_abs_offset = 0;
 static dispatch_once_t s_mach_anchor_once;
@@ -2952,7 +3007,6 @@ static uint64_t (*orig_mach_continuous_time)(void);
 static uint64_t (*orig_mach_absolute_time)(void);
 
 static void init_mach_clock_offsets_once(void) {
-    if (s_in_mach_anchor) return;
     dispatch_once(&s_mach_anchor_once, ^{
         s_in_mach_anchor = YES;
         ZTSettings *s = [ZTSettings sharedSettings];
@@ -2974,7 +3028,7 @@ static void init_mach_clock_offsets_once(void) {
             if (s_mach_abs_offset > s_mach_cont_offset) {
                 s_mach_abs_offset = s_mach_cont_offset;
             }
-            logAudit(@"CPU-CLOCK", [NSString stringWithFormat:@"⏱️ [MACH-ANCHOR] Neo xung nhịp CPU cố định 1 chiều: ContOffset=%lld, AbsOffset=%lld | ContSec=%.1fs, AwakeSec=%.1fs", s_mach_cont_offset, s_mach_abs_offset, contSec, awakeSec]);
+            logAudit(@"CPU-CLOCK", [NSString stringWithFormat:@"⏱️ [MACH-ANCHOR] Neo xung nhịp CPU cố định 1 chiều cho Zalo: ContOffset=%lld, AbsOffset=%lld | ContSec=%.1fs, AwakeSec=%.1fs", s_mach_cont_offset, s_mach_abs_offset, contSec, awakeSec]);
         }
         s_in_mach_anchor = NO;
     });
@@ -2985,9 +3039,11 @@ static uint64_t my_mach_continuous_time(void) {
     if (!is_tweak_active() || s_in_mach_anchor) {
         return (orig_mach_continuous_time && orig_mach_continuous_time != (void *)my_mach_continuous_time) ? orig_mach_continuous_time() : realTicks;
     }
-    s_in_mach_anchor = YES;
+    void *c0 = __builtin_return_address(0);
+    if (!is_fast_zalo_caller(c0)) {
+        return (orig_mach_continuous_time && orig_mach_continuous_time != (void *)my_mach_continuous_time) ? orig_mach_continuous_time() : realTicks;
+    }
     init_mach_clock_offsets_once();
-    s_in_mach_anchor = NO;
     ZTSettings *s = [ZTSettings sharedSettings];
     if (s.spoofContinuousCPUClock && s.bootTimeSec > 0) {
         // Tăng đơn điệu tuyệt đối thuận theo chip ARM64 phần cứng thật
@@ -3001,9 +3057,11 @@ static uint64_t my_mach_absolute_time(void) {
     if (!is_tweak_active() || s_in_mach_anchor) {
         return (orig_mach_absolute_time && orig_mach_absolute_time != (void *)my_mach_absolute_time) ? orig_mach_absolute_time() : realTicks;
     }
-    s_in_mach_anchor = YES;
+    void *c0 = __builtin_return_address(0);
+    if (!is_fast_zalo_caller(c0)) {
+        return (orig_mach_absolute_time && orig_mach_absolute_time != (void *)my_mach_absolute_time) ? orig_mach_absolute_time() : realTicks;
+    }
     init_mach_clock_offsets_once();
-    s_in_mach_anchor = NO;
     ZTSettings *s = [ZTSettings sharedSettings];
     if (s.spoofContinuousCPUClock && s.bootTimeSec > 0) {
         uint64_t absVal = (uint64_t)((int64_t)realTicks + s_mach_abs_offset);
