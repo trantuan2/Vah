@@ -2909,9 +2909,8 @@ static __attribute__((unused)) inline double mach_ticks_to_seconds(uint64_t tick
 // Đồng bộ Uptime với kern.boottime tự nhiên (now - boottime >= systemUptime, chênh lệch là thời gian máy ngủ)
 static void get_consistent_uptimes(double *outContUptime, double *outAwakeUptime) {
     uint64_t bootSec = [ZTSettings sharedSettings].bootTimeSec;
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    double now = (double)tv.tv_sec + ((double)tv.tv_usec / 1000000.0);
+    time_t curSec = time(NULL);
+    double now = (curSec > 0) ? (double)curSec : 0.0;
 
     double contSec = 0.0;
     if (bootSec > 0 && now > (double)bootSec) {
@@ -2947,12 +2946,15 @@ static inline uint64_t raw_hardware_arm64_ticks(void) {
 static int64_t s_mach_cont_offset = 0;
 static int64_t s_mach_abs_offset = 0;
 static dispatch_once_t s_mach_anchor_once;
+static __thread BOOL s_in_mach_anchor = NO;
 
 static uint64_t (*orig_mach_continuous_time)(void);
 static uint64_t (*orig_mach_absolute_time)(void);
 
 static void init_mach_clock_offsets_once(void) {
+    if (s_in_mach_anchor) return;
     dispatch_once(&s_mach_anchor_once, ^{
+        s_in_mach_anchor = YES;
         ZTSettings *s = [ZTSettings sharedSettings];
         if (s.spoofContinuousCPUClock && s.bootTimeSec > 0) {
             double contSec = 0.0, awakeSec = 0.0;
@@ -2974,15 +2976,18 @@ static void init_mach_clock_offsets_once(void) {
             }
             logAudit(@"CPU-CLOCK", [NSString stringWithFormat:@"⏱️ [MACH-ANCHOR] Neo xung nhịp CPU cố định 1 chiều: ContOffset=%lld, AbsOffset=%lld | ContSec=%.1fs, AwakeSec=%.1fs", s_mach_cont_offset, s_mach_abs_offset, contSec, awakeSec]);
         }
+        s_in_mach_anchor = NO;
     });
 }
 
 static uint64_t my_mach_continuous_time(void) {
     uint64_t realTicks = raw_hardware_arm64_ticks();
-    if (!is_tweak_active()) {
+    if (!is_tweak_active() || s_in_mach_anchor) {
         return (orig_mach_continuous_time && orig_mach_continuous_time != (void *)my_mach_continuous_time) ? orig_mach_continuous_time() : realTicks;
     }
+    s_in_mach_anchor = YES;
     init_mach_clock_offsets_once();
+    s_in_mach_anchor = NO;
     ZTSettings *s = [ZTSettings sharedSettings];
     if (s.spoofContinuousCPUClock && s.bootTimeSec > 0) {
         // Tăng đơn điệu tuyệt đối thuận theo chip ARM64 phần cứng thật
@@ -2993,10 +2998,12 @@ static uint64_t my_mach_continuous_time(void) {
 
 static uint64_t my_mach_absolute_time(void) {
     uint64_t realTicks = raw_hardware_arm64_ticks();
-    if (!is_tweak_active()) {
+    if (!is_tweak_active() || s_in_mach_anchor) {
         return (orig_mach_absolute_time && orig_mach_absolute_time != (void *)my_mach_absolute_time) ? orig_mach_absolute_time() : realTicks;
     }
+    s_in_mach_anchor = YES;
     init_mach_clock_offsets_once();
+    s_in_mach_anchor = NO;
     ZTSettings *s = [ZTSettings sharedSettings];
     if (s.spoofContinuousCPUClock && s.bootTimeSec > 0) {
         uint64_t absVal = (uint64_t)((int64_t)realTicks + s_mach_abs_offset);
