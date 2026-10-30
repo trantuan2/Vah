@@ -30,6 +30,7 @@
 #import <stdio.h>
 #import <dlfcn.h>
 #import <time.h>
+#import <sys/time.h>
 #import <mach/mach_time.h>
 #import <stdatomic.h>
 #import <pthread.h>
@@ -3139,18 +3140,24 @@ static uint64_t my_mach_absolute_time(void) {
     return realAbs;
 }
 
-static time_t s_bench_bg_wall_sec = 0;
+static double s_bench_bg_wall_sec = 0.0;
 static uint64_t s_bench_bg_cont_raw = 0;
 static uint64_t s_bench_bg_abs_raw = 0;
 static uint64_t s_bench_bg_cont_spoof = 0;
 static uint64_t s_bench_bg_abs_spoof = 0;
+
+static inline double get_high_res_wall_time_sec(void) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (double)tv.tv_sec + ((double)tv.tv_usec / 1000000.0);
+}
 
 static void record_clock_benchmark_on_background(void) {
     mach_timebase_info_data_t tb;
     mach_timebase_info(&tb);
     double mhz = (tb.numer > 0) ? (((double)tb.denom / (double)tb.numer) * 1000.0) : 24.0;
 
-    s_bench_bg_wall_sec = time(NULL);
+    s_bench_bg_wall_sec = get_high_res_wall_time_sec();
     s_bench_bg_cont_raw = (orig_mach_continuous_time && orig_mach_continuous_time != (void *)my_mach_continuous_time) ? orig_mach_continuous_time() : mach_continuous_time();
     s_bench_bg_abs_raw = (orig_mach_absolute_time && orig_mach_absolute_time != (void *)my_mach_absolute_time) ? orig_mach_absolute_time() : mach_absolute_time();
 
@@ -3161,7 +3168,7 @@ static void record_clock_benchmark_on_background(void) {
         @"\n================================================================================\n"
         @"⏸️ [BENCHMARK-CLOCK] SNAPSHOT KHI MÁY VÀO NỀN / BẮT ĐẦU NGỦ:\n"
         @"   • Phần cứng Apple Timebase: numer=%u, denom=%u (~%.2f MHz)\n"
-        @"   • Giờ hệ thống (Wall-clock): %ld\n"
+        @"   • Giờ hệ thống (Wall-clock): %.6f\n"
         @"   • Kernel Cont Time (Thật):   %llu ticks (%.3fs)\n"
         @"   • Kernel Abs Time (Thật):    %llu ticks (%.3fs)\n"
         @"   • Chênh lệch ngủ tích lũy:   %llu ticks (%.3fs)\n"
@@ -3180,20 +3187,20 @@ static void record_clock_benchmark_on_background(void) {
 }
 
 static void record_clock_benchmark_on_foreground(void) {
-    if (s_bench_bg_wall_sec == 0) return;
+    if (s_bench_bg_wall_sec <= 0.0) return;
 
     mach_timebase_info_data_t tb;
     mach_timebase_info(&tb);
     double mhz = (tb.numer > 0) ? (((double)tb.denom / (double)tb.numer) * 1000.0) : 24.0;
 
-    time_t fg_wall_sec = time(NULL);
+    double fg_wall_sec = get_high_res_wall_time_sec();
     uint64_t fg_cont_raw = (orig_mach_continuous_time && orig_mach_continuous_time != (void *)my_mach_continuous_time) ? orig_mach_continuous_time() : mach_continuous_time();
     uint64_t fg_abs_raw = (orig_mach_absolute_time && orig_mach_absolute_time != (void *)my_mach_absolute_time) ? orig_mach_absolute_time() : mach_absolute_time();
 
     uint64_t fg_cont_spoof = my_mach_continuous_time();
     uint64_t fg_abs_spoof = my_mach_absolute_time();
 
-    long delta_wall = (long)(fg_wall_sec - s_bench_bg_wall_sec);
+    double delta_wall = fg_wall_sec - s_bench_bg_wall_sec;
     int64_t delta_cont_raw = (int64_t)fg_cont_raw - (int64_t)s_bench_bg_cont_raw;
     int64_t delta_abs_raw = (int64_t)fg_abs_raw - (int64_t)s_bench_bg_abs_raw;
 
@@ -3208,19 +3215,24 @@ static void record_clock_benchmark_on_foreground(void) {
     BOOL abs_monotonic = (delta_abs_raw >= 0);
     BOOL invariant_c_ge_a = (fg_cont_raw >= fg_abs_raw);
 
+    double diff_sec = fabs(delta_cont_raw_sec - delta_wall);
+    double sync_ratio = (delta_wall > 0.0) ? (1.0 - (diff_sec / delta_wall)) * 100.0 : 100.0;
+    if (sync_ratio > 100.0) sync_ratio = 100.0;
+    if (sync_ratio < 0.0) sync_ratio = 0.0;
+
     logAudit(@"BENCHMARK-CLOCK", [NSString stringWithFormat:
         @"\n================================================================================\n"
         @"📊 [BENCHMARK-CLOCK] BÁO CÁO ĐO ĐẠC NHỊP CPU KHI THỨC DẬY TỪ SLEEP / BACKGROUND:\n"
         @"================================================================================\n"
         @"⚙️ Thông số phần cứng Apple:\n"
         @"   • Chip Timebase: numer=%u, denom=%u (~%.2f MHz)\n"
-        @"   • Thời gian máy ngủ thực tế (Wall-clock): %ld giây (~%.1f phút)\n"
+        @"   • Thời gian máy ngủ thực tế (Wall-clock micro-giây): %.3fs (~%.2f phút)\n"
         @"--------------------------------------------------------------------------------\n"
         @"🍎 KẾT QUẢ ĐO ĐẠC PHẦN CỨNG APPLE KERNEL THẬT (RAW):\n"
         @"   • Kernel Cont Time tăng:   %+lld ticks (%+.3fs)\n"
         @"   • Kernel Abs Time tăng:    %+lld ticks (%+.3fs) [Chỉ đếm lúc awake]\n"
         @"   • Thời gian ngủ được bù:   %+.3fs (PMU Apple tự động bù vào Cont)\n"
-        @"   • Độ chênh Cont vs Wall:   Lệch %.3fs so với giờ thực tế\n"
+        @"   • Độ chênh Cont vs Wall:   Lệch %.4fs (Độ đồng bộ thực tế: %.3f%%)\n"
         @"   • Kiểm tra tính đơn điệu:  Cont tăng? [%@] | Abs tăng? [%@] | C >= A? [%@]\n"
         @"--------------------------------------------------------------------------------\n"
         @"🎭 KẾT QUẢ TWEAK SPOOF ĐỒNG BỘ CHO ZALO:\n"
@@ -3229,11 +3241,11 @@ static void record_clock_benchmark_on_foreground(void) {
         @"   • Kiểm tra lùi nhịp Zalo:  %@\n"
         @"================================================================================",
         tb.numer, tb.denom, mhz,
-        delta_wall, (double)delta_wall / 60.0,
+        delta_wall, delta_wall / 60.0,
         delta_cont_raw, delta_cont_raw_sec,
         delta_abs_raw, delta_abs_raw_sec,
         delta_sleep_sec,
-        fabs(delta_cont_raw_sec - (double)delta_wall),
+        diff_sec, sync_ratio,
         cont_monotonic ? @"✅ ĐẠT (KHÔNG LÙI)" : @"❌ LỖI (BỊ LÙI TICKS)",
         abs_monotonic ? @"✅ ĐẠT (KHÔNG LÙI)" : @"❌ LỖI (BỊ LÙI TICKS)",
         invariant_c_ge_a ? @"✅ ĐẠT (C >= A)" : @"❌ LỖI (A > C)",
@@ -3242,7 +3254,7 @@ static void record_clock_benchmark_on_foreground(void) {
         (delta_cont_spoof >= 0 && delta_abs_spoof >= 0) ? @"✅ HOÀN HẢO - KHÔNG BỊ LÙI NHỊP" : @"❌ CẢNH BÁO BỊ LÙI NHỊP"
     ]);
 
-    s_bench_bg_wall_sec = 0;
+    s_bench_bg_wall_sec = 0.0;
 }
 
 
