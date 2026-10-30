@@ -2926,7 +2926,8 @@ static void get_consistent_uptimes(double *outContUptime, double *outAwakeUptime
     // Thời gian ngủ tự nhiên của máy phân bổ đa dạng theo thói quen người dùng (từ 25% đến 68% tổng thời gian máy bật)
     double sleepRatio = 0.25 + (double)((bootSec * 2654435761ULL) % 430ULL) / 1000.0;
     double awakeSec = contSec * (1.0 - sleepRatio);
-    if (awakeSec < 60.0) awakeSec = 60.0;
+    if (awakeSec < 0.0) awakeSec = 0.0;
+    if (awakeSec > contSec) awakeSec = contSec;
 
     if (outContUptime) *outContUptime = contSec;
     if (outAwakeUptime) *outAwakeUptime = awakeSec;
@@ -3050,10 +3051,6 @@ static void init_mach_clock_offsets_once(void) {
             s_mach_cont_offset = (int64_t)targetContTicks - (int64_t)realCont;
             s_mach_abs_offset = (int64_t)targetAbsTicks - (int64_t)realAbs;
 
-            // Bất biến Darwin Kernel: continuous_time >= absolute_time
-            if (s_mach_abs_offset > s_mach_cont_offset) {
-                s_mach_abs_offset = s_mach_cont_offset;
-            }
             logAudit(@"CPU-CLOCK", [NSString stringWithFormat:@"⏱️ [MACH-ANCHOR] Neo xung nhịp CPU cố định 1 chiều cho Zalo: ContOffset=%lld, AbsOffset=%lld | ContSec=%.1fs, AwakeSec=%.1fs", s_mach_cont_offset, s_mach_abs_offset, contSec, awakeSec]);
         }
         s_in_mach_anchor = NO;
@@ -3080,10 +3077,10 @@ static uint64_t my_mach_continuous_time(void) {
     if (s.spoofContinuousCPUClock && s.bootTimeSec > 0) {
         uint64_t contVal = (uint64_t)((int64_t)realCont + s_mach_cont_offset);
 
-        // Strict Monotonic Floor Guard: Đảm bảo không bao giờ bị lùi nhịp CPU kể cả sau khi máy vào Deep Sleep
+        // Chốt sàn chuẩn max(contVal, prev) - Tuyệt đối không ép +1 nhân tạo
         uint64_t prev = atomic_load(&s_max_returned_cont);
         while (1) {
-            uint64_t target = (contVal > prev) ? contVal : (prev + 1);
+            uint64_t target = (contVal > prev) ? contVal : prev;
             if (atomic_compare_exchange_weak(&s_max_returned_cont, &prev, target)) {
                 contVal = target;
                 break;
@@ -3096,7 +3093,6 @@ static uint64_t my_mach_continuous_time(void) {
             logAudit(@"CPU-CLOCK", [NSString stringWithFormat:@"🎯 [ZALO CALLER #%d] Zalo gọi mach_continuous_time() từ %@ -> [GIỜ FAKE ĐỒNG BỘ: %llu ticks (%.1fs)]", s_zalo_cont_log_count, format_caller_info(c0), contVal, (double)contVal / 24000000.0]);
             s_in_mach_anchor = NO;
         }
-        // Tăng đơn điệu tuyệt đối thuận theo Darwin Kernel và chip ARM64
         return contVal;
     }
     return realCont;
@@ -3122,20 +3118,14 @@ static uint64_t my_mach_absolute_time(void) {
     if (s.spoofContinuousCPUClock && s.bootTimeSec > 0) {
         uint64_t absVal = (uint64_t)((int64_t)realAbs + s_mach_abs_offset);
 
-        // Strict Monotonic Floor Guard: Đảm bảo không bao giờ bị lùi nhịp CPU kể cả sau khi máy vào Deep Sleep
+        // Chốt sàn chuẩn max(absVal, prev) - Tuyệt đối không ép +1 nhân tạo
         uint64_t prev = atomic_load(&s_max_returned_abs);
         while (1) {
-            uint64_t target = (absVal > prev) ? absVal : (prev + 1);
+            uint64_t target = (absVal > prev) ? absVal : prev;
             if (atomic_compare_exchange_weak(&s_max_returned_abs, &prev, target)) {
                 absVal = target;
                 break;
             }
-        }
-
-        // Bất biến Darwin Kernel: continuous_time >= absolute_time
-        uint64_t curMaxCont = atomic_load(&s_max_returned_cont);
-        if (curMaxCont > 0 && absVal > curMaxCont) {
-            absVal = curMaxCont;
         }
 
         if (s_zalo_abs_log_count < 4) {
@@ -3144,10 +3134,115 @@ static uint64_t my_mach_absolute_time(void) {
             logAudit(@"CPU-CLOCK", [NSString stringWithFormat:@"🎯 [ZALO CALLER #%d] Zalo gọi mach_absolute_time() từ %@ -> [GIỜ FAKE ĐỒNG BỘ: %llu ticks (%.1fs)]", s_zalo_abs_log_count, format_caller_info(c0), absVal, (double)absVal / 24000000.0]);
             s_in_mach_anchor = NO;
         }
-        // Tăng đơn điệu tuyệt đối thuận theo Darwin Kernel và chip ARM64
         return absVal;
     }
     return realAbs;
+}
+
+static time_t s_bench_bg_wall_sec = 0;
+static uint64_t s_bench_bg_cont_raw = 0;
+static uint64_t s_bench_bg_abs_raw = 0;
+static uint64_t s_bench_bg_cont_spoof = 0;
+static uint64_t s_bench_bg_abs_spoof = 0;
+
+static void record_clock_benchmark_on_background(void) {
+    mach_timebase_info_data_t tb;
+    mach_timebase_info(&tb);
+    double mhz = (tb.numer > 0) ? (((double)tb.denom / (double)tb.numer) * 1000.0) : 24.0;
+
+    s_bench_bg_wall_sec = time(NULL);
+    s_bench_bg_cont_raw = (orig_mach_continuous_time && orig_mach_continuous_time != (void *)my_mach_continuous_time) ? orig_mach_continuous_time() : mach_continuous_time();
+    s_bench_bg_abs_raw = (orig_mach_absolute_time && orig_mach_absolute_time != (void *)my_mach_absolute_time) ? orig_mach_absolute_time() : mach_absolute_time();
+
+    s_bench_bg_cont_spoof = my_mach_continuous_time();
+    s_bench_bg_abs_spoof = my_mach_absolute_time();
+
+    logAudit(@"BENCHMARK-CLOCK", [NSString stringWithFormat:
+        @"\n================================================================================\n"
+        @"⏸️ [BENCHMARK-CLOCK] SNAPSHOT KHI MÁY VÀO NỀN / BẮT ĐẦU NGỦ:\n"
+        @"   • Phần cứng Apple Timebase: numer=%u, denom=%u (~%.2f MHz)\n"
+        @"   • Giờ hệ thống (Wall-clock): %ld\n"
+        @"   • Kernel Cont Time (Thật):   %llu ticks (%.3fs)\n"
+        @"   • Kernel Abs Time (Thật):    %llu ticks (%.3fs)\n"
+        @"   • Chênh lệch ngủ tích lũy:   %llu ticks (%.3fs)\n"
+        @"   • Tweak Spoofed Cont:        %llu ticks (%.3fs)\n"
+        @"   • Tweak Spoofed Abs:         %llu ticks (%.3fs)\n"
+        @"================================================================================",
+        tb.numer, tb.denom, mhz,
+        s_bench_bg_wall_sec,
+        s_bench_bg_cont_raw, mach_ticks_to_seconds(s_bench_bg_cont_raw),
+        s_bench_bg_abs_raw, mach_ticks_to_seconds(s_bench_bg_abs_raw),
+        (s_bench_bg_cont_raw >= s_bench_bg_abs_raw) ? (s_bench_bg_cont_raw - s_bench_bg_abs_raw) : 0ULL,
+        (s_bench_bg_cont_raw >= s_bench_bg_abs_raw) ? mach_ticks_to_seconds(s_bench_bg_cont_raw - s_bench_bg_abs_raw) : 0.0,
+        s_bench_bg_cont_spoof, mach_ticks_to_seconds(s_bench_bg_cont_spoof),
+        s_bench_bg_abs_spoof, mach_ticks_to_seconds(s_bench_bg_abs_spoof)
+    ]);
+}
+
+static void record_clock_benchmark_on_foreground(void) {
+    if (s_bench_bg_wall_sec == 0) return;
+
+    mach_timebase_info_data_t tb;
+    mach_timebase_info(&tb);
+    double mhz = (tb.numer > 0) ? (((double)tb.denom / (double)tb.numer) * 1000.0) : 24.0;
+
+    time_t fg_wall_sec = time(NULL);
+    uint64_t fg_cont_raw = (orig_mach_continuous_time && orig_mach_continuous_time != (void *)my_mach_continuous_time) ? orig_mach_continuous_time() : mach_continuous_time();
+    uint64_t fg_abs_raw = (orig_mach_absolute_time && orig_mach_absolute_time != (void *)my_mach_absolute_time) ? orig_mach_absolute_time() : mach_absolute_time();
+
+    uint64_t fg_cont_spoof = my_mach_continuous_time();
+    uint64_t fg_abs_spoof = my_mach_absolute_time();
+
+    long delta_wall = (long)(fg_wall_sec - s_bench_bg_wall_sec);
+    int64_t delta_cont_raw = (int64_t)fg_cont_raw - (int64_t)s_bench_bg_cont_raw;
+    int64_t delta_abs_raw = (int64_t)fg_abs_raw - (int64_t)s_bench_bg_abs_raw;
+
+    int64_t delta_cont_spoof = (int64_t)fg_cont_spoof - (int64_t)s_bench_bg_cont_spoof;
+    int64_t delta_abs_spoof = (int64_t)fg_abs_spoof - (int64_t)s_bench_bg_abs_spoof;
+
+    double delta_cont_raw_sec = mach_ticks_to_signed_seconds(delta_cont_raw);
+    double delta_abs_raw_sec = mach_ticks_to_signed_seconds(delta_abs_raw);
+    double delta_sleep_sec = delta_cont_raw_sec - delta_abs_raw_sec;
+
+    BOOL cont_monotonic = (delta_cont_raw >= 0);
+    BOOL abs_monotonic = (delta_abs_raw >= 0);
+    BOOL invariant_c_ge_a = (fg_cont_raw >= fg_abs_raw);
+
+    logAudit(@"BENCHMARK-CLOCK", [NSString stringWithFormat:
+        @"\n================================================================================\n"
+        @"📊 [BENCHMARK-CLOCK] BÁO CÁO ĐO ĐẠC NHỊP CPU KHI THỨC DẬY TỪ SLEEP / BACKGROUND:\n"
+        @"================================================================================\n"
+        @"⚙️ Thông số phần cứng Apple:\n"
+        @"   • Chip Timebase: numer=%u, denom=%u (~%.2f MHz)\n"
+        @"   • Thời gian máy ngủ thực tế (Wall-clock): %ld giây (~%.1f phút)\n"
+        @"--------------------------------------------------------------------------------\n"
+        @"🍎 KẾT QUẢ ĐO ĐẠC PHẦN CỨNG APPLE KERNEL THẬT (RAW):\n"
+        @"   • Kernel Cont Time tăng:   %+lld ticks (%+.3fs)\n"
+        @"   • Kernel Abs Time tăng:    %+lld ticks (%+.3fs) [Chỉ đếm lúc awake]\n"
+        @"   • Thời gian ngủ được bù:   %+.3fs (PMU Apple tự động bù vào Cont)\n"
+        @"   • Độ chênh Cont vs Wall:   Lệch %.3fs so với giờ thực tế\n"
+        @"   • Kiểm tra tính đơn điệu:  Cont tăng? [%@] | Abs tăng? [%@] | C >= A? [%@]\n"
+        @"--------------------------------------------------------------------------------\n"
+        @"🎭 KẾT QUẢ TWEAK SPOOF ĐỒNG BỘ CHO ZALO:\n"
+        @"   • Spoofed Cont Time tăng:  %+lld ticks (%+.3fs)\n"
+        @"   • Spoofed Abs Time tăng:   %+lld ticks (%+.3fs)\n"
+        @"   • Kiểm tra lùi nhịp Zalo:  %@\n"
+        @"================================================================================",
+        tb.numer, tb.denom, mhz,
+        delta_wall, (double)delta_wall / 60.0,
+        delta_cont_raw, delta_cont_raw_sec,
+        delta_abs_raw, delta_abs_raw_sec,
+        delta_sleep_sec,
+        fabs(delta_cont_raw_sec - (double)delta_wall),
+        cont_monotonic ? @"✅ ĐẠT (KHÔNG LÙI)" : @"❌ LỖI (BỊ LÙI TICKS)",
+        abs_monotonic ? @"✅ ĐẠT (KHÔNG LÙI)" : @"❌ LỖI (BỊ LÙI TICKS)",
+        invariant_c_ge_a ? @"✅ ĐẠT (C >= A)" : @"❌ LỖI (A > C)",
+        delta_cont_spoof, mach_ticks_to_signed_seconds(delta_cont_spoof),
+        delta_abs_spoof, mach_ticks_to_signed_seconds(delta_abs_spoof),
+        (delta_cont_spoof >= 0 && delta_abs_spoof >= 0) ? @"✅ HOÀN HẢO - KHÔNG BỊ LÙI NHỊP" : @"❌ CẢNH BÁO BỊ LÙI NHỊP"
+    ]);
+
+    s_bench_bg_wall_sec = 0;
 }
 
 
@@ -6225,6 +6320,20 @@ static void zt_early_keychain_purge_if_needed(void) {
                     [[ZTMenuManager sharedManager] setupInAppMenu];
                 }
                 start_battery_drain_timer_if_needed();
+            }];
+
+            [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidEnterBackgroundNotification
+                                                              object:nil
+                                                               queue:[NSOperationQueue mainQueue]
+                                                          usingBlock:^(NSNotification * _Nonnull note) {
+                record_clock_benchmark_on_background();
+            }];
+
+            [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
+                                                              object:nil
+                                                               queue:[NSOperationQueue mainQueue]
+                                                          usingBlock:^(NSNotification * _Nonnull note) {
+                record_clock_benchmark_on_foreground();
             }];
         }
 
