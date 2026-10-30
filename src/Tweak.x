@@ -31,6 +31,7 @@
 #import <dlfcn.h>
 #import <time.h>
 #import <mach/mach_time.h>
+#import <stdatomic.h>
 #import <pthread.h>
 #import "fishhook.h"
 #import "Config.h"
@@ -44,6 +45,7 @@ __attribute__((visibility("default"))) NSString *zt_get_last_centralized_did(voi
 __attribute__((visibility("default"))) NSInteger zt_get_qos_error_count(void);
 __attribute__((visibility("default"))) int zt_get_masked_ifaddrs(struct ifaddrs **ifap);
 __attribute__((visibility("default"))) void zt_log_audit(NSString *category, NSString *detail);
+__attribute__((visibility("default"))) void zt_reset_mach_clock_anchors(void);
 
 static void (*dynamic_MSHookFunction)(void *symbol, void *replace, void **result) = NULL;
 #if __has_feature(ptrauth_calls)
@@ -601,6 +603,7 @@ static void reset_audit_log_on_wipe(NSString *machine, NSString *idfv) {
     s_logged_c_info_bid = NO;
     zt_reset_runtime_counters();
     zt_reset_radar_cache();
+    zt_reset_mach_clock_anchors();
 
     NSString *home = NSHomeDirectory();
     if (!home) return;
@@ -3002,9 +3005,31 @@ static int64_t s_mach_cont_offset = 0;
 static int64_t s_mach_abs_offset = 0;
 static dispatch_once_t s_mach_anchor_once;
 static __thread BOOL s_in_mach_anchor = NO;
+static _Atomic uint64_t s_max_returned_cont = 0;
+static _Atomic uint64_t s_max_returned_abs = 0;
 
 static uint64_t (*orig_mach_continuous_time)(void);
 static uint64_t (*orig_mach_absolute_time)(void);
+
+static int s_zalo_cont_log_count = 0;
+static int s_sys_cont_log_count = 0;
+static int s_zalo_abs_log_count = 0;
+static int s_sys_abs_log_count = 0;
+
+__attribute__((visibility("default"))) void zt_reset_mach_clock_anchors(void) {
+    s_mach_anchor_once = 0;
+    s_mach_cont_offset = 0;
+    s_mach_abs_offset = 0;
+    atomic_store(&s_max_returned_cont, 0);
+    atomic_store(&s_max_returned_abs, 0);
+    s_zalo_cont_log_count = 0;
+    s_sys_cont_log_count = 0;
+    s_zalo_abs_log_count = 0;
+    s_sys_abs_log_count = 0;
+}
+
+static uint64_t my_mach_continuous_time(void);
+static uint64_t my_mach_absolute_time(void);
 
 static void init_mach_clock_offsets_once(void) {
     dispatch_once(&s_mach_anchor_once, ^{
@@ -3017,12 +3042,13 @@ static void init_mach_clock_offsets_once(void) {
             uint64_t targetContTicks = seconds_to_mach_ticks(contSec);
             uint64_t targetAbsTicks = seconds_to_mach_ticks(awakeSec);
 
-            uint64_t realCont = raw_hardware_arm64_ticks();
+            uint64_t realCont = (orig_mach_continuous_time && orig_mach_continuous_time != (void *)my_mach_continuous_time) ? orig_mach_continuous_time() : raw_hardware_arm64_ticks();
+            uint64_t realAbs = (orig_mach_absolute_time && orig_mach_absolute_time != (void *)my_mach_absolute_time) ? orig_mach_absolute_time() : raw_hardware_arm64_ticks();
 
             // Neo mốc cố định 1 lần duy nhất trong toàn bộ vòng đời ứng dụng
             // Đảm bảo không bao giờ bị tính toán lại giữa chừng gây giật lùi nhịp CPU!
             s_mach_cont_offset = (int64_t)targetContTicks - (int64_t)realCont;
-            s_mach_abs_offset = (int64_t)targetAbsTicks - (int64_t)realCont;
+            s_mach_abs_offset = (int64_t)targetAbsTicks - (int64_t)realAbs;
 
             // Bất biến Darwin Kernel: continuous_time >= absolute_time
             if (s_mach_abs_offset > s_mach_cont_offset) {
@@ -3034,75 +3060,94 @@ static void init_mach_clock_offsets_once(void) {
     });
 }
 
-static int s_zalo_cont_log_count = 0;
-static int s_sys_cont_log_count = 0;
-static int s_zalo_abs_log_count = 0;
-static int s_sys_abs_log_count = 0;
-
 static uint64_t my_mach_continuous_time(void) {
-    uint64_t realTicks = raw_hardware_arm64_ticks();
+    uint64_t realCont = (orig_mach_continuous_time && orig_mach_continuous_time != (void *)my_mach_continuous_time) ? orig_mach_continuous_time() : raw_hardware_arm64_ticks();
     if (!is_tweak_active() || s_in_mach_anchor) {
-        return (orig_mach_continuous_time && orig_mach_continuous_time != (void *)my_mach_continuous_time) ? orig_mach_continuous_time() : realTicks;
+        return realCont;
     }
     void *c0 = __builtin_return_address(0);
     if (!is_fast_zalo_caller(c0)) {
         if (s_sys_cont_log_count < 3) {
             s_sys_cont_log_count++;
             s_in_mach_anchor = YES;
-            logAudit(@"CPU-CLOCK", [NSString stringWithFormat:@"🌐 [SYSTEM CALLER #%d] CFNetwork/Kernel gọi mach_continuous_time() từ %@ -> [GIỜ THẬT: %llu ticks]", s_sys_cont_log_count, format_caller_info(c0), realTicks]);
+            logAudit(@"CPU-CLOCK", [NSString stringWithFormat:@"🌐 [SYSTEM CALLER #%d] CFNetwork/Kernel gọi mach_continuous_time() từ %@ -> [GIỜ THẬT: %llu ticks]", s_sys_cont_log_count, format_caller_info(c0), realCont]);
             s_in_mach_anchor = NO;
         }
-        return (orig_mach_continuous_time && orig_mach_continuous_time != (void *)my_mach_continuous_time) ? orig_mach_continuous_time() : realTicks;
+        return realCont;
     }
     init_mach_clock_offsets_once();
     ZTSettings *s = [ZTSettings sharedSettings];
     if (s.spoofContinuousCPUClock && s.bootTimeSec > 0) {
-        uint64_t contVal = (uint64_t)((int64_t)realTicks + s_mach_cont_offset);
+        uint64_t contVal = (uint64_t)((int64_t)realCont + s_mach_cont_offset);
+
+        // Strict Monotonic Floor Guard: Đảm bảo không bao giờ bị lùi nhịp CPU kể cả sau khi máy vào Deep Sleep
+        uint64_t prev = atomic_load(&s_max_returned_cont);
+        while (1) {
+            uint64_t target = (contVal > prev) ? contVal : (prev + 1);
+            if (atomic_compare_exchange_weak(&s_max_returned_cont, &prev, target)) {
+                contVal = target;
+                break;
+            }
+        }
+
         if (s_zalo_cont_log_count < 4) {
             s_zalo_cont_log_count++;
             s_in_mach_anchor = YES;
             logAudit(@"CPU-CLOCK", [NSString stringWithFormat:@"🎯 [ZALO CALLER #%d] Zalo gọi mach_continuous_time() từ %@ -> [GIỜ FAKE ĐỒNG BỘ: %llu ticks (%.1fs)]", s_zalo_cont_log_count, format_caller_info(c0), contVal, (double)contVal / 24000000.0]);
             s_in_mach_anchor = NO;
         }
-        // Tăng đơn điệu tuyệt đối thuận theo chip ARM64 phần cứng thật
+        // Tăng đơn điệu tuyệt đối thuận theo Darwin Kernel và chip ARM64
         return contVal;
     }
-    return (orig_mach_continuous_time && orig_mach_continuous_time != (void *)my_mach_continuous_time) ? orig_mach_continuous_time() : realTicks;
+    return realCont;
 }
 
 static uint64_t my_mach_absolute_time(void) {
-    uint64_t realTicks = raw_hardware_arm64_ticks();
+    uint64_t realAbs = (orig_mach_absolute_time && orig_mach_absolute_time != (void *)my_mach_absolute_time) ? orig_mach_absolute_time() : raw_hardware_arm64_ticks();
     if (!is_tweak_active() || s_in_mach_anchor) {
-        return (orig_mach_absolute_time && orig_mach_absolute_time != (void *)my_mach_absolute_time) ? orig_mach_absolute_time() : realTicks;
+        return realAbs;
     }
     void *c0 = __builtin_return_address(0);
     if (!is_fast_zalo_caller(c0)) {
         if (s_sys_abs_log_count < 3) {
             s_sys_abs_log_count++;
             s_in_mach_anchor = YES;
-            logAudit(@"CPU-CLOCK", [NSString stringWithFormat:@"🌐 [SYSTEM CALLER #%d] CFNetwork/Kernel gọi mach_absolute_time() từ %@ -> [GIỜ THẬT: %llu ticks]", s_sys_abs_log_count, format_caller_info(c0), realTicks]);
+            logAudit(@"CPU-CLOCK", [NSString stringWithFormat:@"🌐 [SYSTEM CALLER #%d] CFNetwork/Kernel gọi mach_absolute_time() từ %@ -> [GIỜ THẬT: %llu ticks]", s_sys_abs_log_count, format_caller_info(c0), realAbs]);
             s_in_mach_anchor = NO;
         }
-        return (orig_mach_absolute_time && orig_mach_absolute_time != (void *)my_mach_absolute_time) ? orig_mach_absolute_time() : realTicks;
+        return realAbs;
     }
     init_mach_clock_offsets_once();
     ZTSettings *s = [ZTSettings sharedSettings];
     if (s.spoofContinuousCPUClock && s.bootTimeSec > 0) {
-        uint64_t absVal = (uint64_t)((int64_t)realTicks + s_mach_abs_offset);
-        uint64_t contVal = (uint64_t)((int64_t)realTicks + s_mach_cont_offset);
-        if (absVal > contVal) {
-            absVal = contVal;
+        uint64_t absVal = (uint64_t)((int64_t)realAbs + s_mach_abs_offset);
+
+        // Strict Monotonic Floor Guard: Đảm bảo không bao giờ bị lùi nhịp CPU kể cả sau khi máy vào Deep Sleep
+        uint64_t prev = atomic_load(&s_max_returned_abs);
+        while (1) {
+            uint64_t target = (absVal > prev) ? absVal : (prev + 1);
+            if (atomic_compare_exchange_weak(&s_max_returned_abs, &prev, target)) {
+                absVal = target;
+                break;
+            }
         }
+
+        // Bất biến Darwin Kernel: continuous_time >= absolute_time
+        uint64_t curMaxCont = atomic_load(&s_max_returned_cont);
+        if (curMaxCont > 0 && absVal > curMaxCont) {
+            absVal = curMaxCont;
+        }
+
         if (s_zalo_abs_log_count < 4) {
             s_zalo_abs_log_count++;
             s_in_mach_anchor = YES;
             logAudit(@"CPU-CLOCK", [NSString stringWithFormat:@"🎯 [ZALO CALLER #%d] Zalo gọi mach_absolute_time() từ %@ -> [GIỜ FAKE ĐỒNG BỘ: %llu ticks (%.1fs)]", s_zalo_abs_log_count, format_caller_info(c0), absVal, (double)absVal / 24000000.0]);
             s_in_mach_anchor = NO;
         }
-        // Tăng đơn điệu tuyệt đối thuận theo chip ARM64 phần cứng thật
+        // Tăng đơn điệu tuyệt đối thuận theo Darwin Kernel và chip ARM64
         return absVal;
     }
-    return (orig_mach_absolute_time && orig_mach_absolute_time != (void *)my_mach_absolute_time) ? orig_mach_absolute_time() : realTicks;
+    return realAbs;
 }
 
 
