@@ -1481,6 +1481,37 @@ UIViewController *ZTGetTopViewController(void) {
         [top presentViewController:avc animated:YES completion:nil];
     }]];
 
+    [alert addAction:[UIAlertAction actionWithTitle:@"📦 Xuất Trọn Bộ Log (Cả Audit & HAR Cùng Lúc)" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        NSString *globalAudit = @"/var/mobile/Documents/ZaloAudit.log";
+        NSString *globalHar = @"/var/mobile/Documents/ZaloTraffic.har";
+        NSString *home = NSHomeDirectory();
+        NSString *containerAudit = home ? [home stringByAppendingPathComponent:@"Documents/ZaloAudit.log"] : nil;
+        NSString *containerHar = home ? [home stringByAppendingPathComponent:@"Documents/ZaloTraffic.har"] : nil;
+
+        NSString *chosenAudit = [[NSFileManager defaultManager] fileExistsAtPath:globalAudit] ? globalAudit : containerAudit;
+        NSString *chosenHar = [[NSFileManager defaultManager] fileExistsAtPath:globalHar] ? globalHar : containerHar;
+
+        NSMutableArray *items = [NSMutableArray array];
+        if (chosenAudit && [[NSFileManager defaultManager] fileExistsAtPath:chosenAudit]) {
+            [items addObject:[NSURL fileURLWithPath:chosenAudit]];
+        }
+        if (chosenHar && [[NSFileManager defaultManager] fileExistsAtPath:chosenHar]) {
+            [items addObject:[NSURL fileURLWithPath:chosenHar]];
+        }
+
+        if (items.count == 0) {
+            UIAlertController *noLog = [UIAlertController alertControllerWithTitle:@"Chưa Có Dữ Liệu Log"
+                                                                           message:@"Chưa tìm thấy file ZaloAudit.log hoặc ZaloTraffic.har.\nHãy bật Kiểm Toán và sử dụng Zalo vài giây."
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+            [noLog addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [top presentViewController:noLog animated:YES completion:nil];
+            return;
+        }
+
+        UIActivityViewController *avc = [[UIActivityViewController alloc] initWithActivityItems:items applicationActivities:nil];
+        [top presentViewController:avc animated:YES completion:nil];
+    }]];
+
     [alert addAction:[UIAlertAction actionWithTitle:@"🗑️ Xóa Sạch File Log" style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
         [[NSFileManager defaultManager] removeItemAtPath:logPath error:nil];
         [[NSFileManager defaultManager] removeItemAtPath:@"/var/mobile/Documents/ZaloAudit.log" error:nil];

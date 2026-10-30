@@ -512,6 +512,8 @@ static __attribute__((unused)) uint64_t get_real_disk_total_size(void) {
 }
 // Forward declaration - hàm logAudit được định nghĩa ở phần sau
 static void logAudit(NSString *category, NSString *detail);
+static void append_data_to_file_safely(NSString *path, NSData *data);
+static void insert_har_session_marker(NSString *timestamp, NSString *machine, NSString *idfv);
 
 static BOOL s_session_profile_locked = NO;
 
@@ -610,10 +612,6 @@ static void reset_audit_log_on_wipe(NSString *machine, NSString *idfv) {
     if (!home) return;
     NSString *docDir = [home stringByAppendingPathComponent:@"Documents"];
     NSString *auditPath = [docDir stringByAppendingPathComponent:@"ZaloAudit.log"];
-    NSString *harPath = [docDir stringByAppendingPathComponent:@"ZaloTraffic.har"];
-
-    NSFileManager *fm = [NSFileManager defaultManager];
-    [fm removeItemAtPath:harPath error:nil];
 
     NSDateFormatter *df = [[NSDateFormatter alloc] init];
     [df setDateFormat:@"yyyy-MM-dd HH:mm:ss"];
@@ -621,21 +619,25 @@ static void reset_audit_log_on_wipe(NSString *machine, NSString *idfv) {
 
     NSString *appType = is_original_zalo_app() ? @"Zalo Gốc (vn.com.vng.zingalo)" : @"Zalo Clone (Đã bẻ hướng C-layer & APNs Token)";
 
+    // Không xóa file HAR khi Wipe - Chèn Session Marker để nối tiếp luồng traffic giữa các acc
+    insert_har_session_marker(timeStr, machine, idfv);
+
+    // Không ghi đè (overwrite) file Audit - Ghi NỐI TIẾP (Append) với header phân cách rõ ràng
     NSString *header = [NSString stringWithFormat:
-        @"================================================================================\n"
-        @"🚀 [SYSTEM-INIT] === BẮT ĐẦU PHIÊN AUDIT MỚI SAU DEEP WIPE ===\n"
+        @"\n\n================================================================================\n"
+        @"🔄 [WIPE / PROFILE MỚI] === BẮT ĐẦU PHIÊN AUDIT NỐI TIẾP ===\n"
         @"🕒 Thời gian kích hoạt: %@\n"
         @"📱 Thiết bị: %@ | IDFV: %@\n"
         @"📦 Gói Ứng Dụng: %@\n"
         @"================================================================================\n\n",
         timeStr, machine ?: @"iPhone", idfv ?: @"N/A", appType];
 
-    [header writeToFile:auditPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    chmod([auditPath UTF8String], 0666);
+    NSData *headerData = [header dataUsingEncoding:NSUTF8StringEncoding];
+    append_data_to_file_safely(auditPath, headerData);
+    append_data_to_file_safely(@"/var/mobile/Documents/ZaloAudit.log", headerData);
 
     if (is_device_jailbroken()) {
-        [header writeToFile:GLOBAL_AUDIT_LOG_PATH atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        chmod([GLOBAL_AUDIT_LOG_PATH UTF8String], 0666);
+        append_data_to_file_safely(GLOBAL_AUDIT_LOG_PATH, headerData);
     }
 }
 
@@ -5138,9 +5140,9 @@ static void append_to_har_file(NSDictionary *entryDict) {
         NSMutableArray *entries = harRoot[@"log"][@"entries"];
         if (entries) {
             [entries addObject:entryDict];
-            // Giới hạn 500 request gần nhất
-            if (entries.count > 500) {
-                [entries removeObjectsInRange:NSMakeRange(0, entries.count - 500)];
+            // Giới hạn 2000 request gần nhất (thoải mái lưu nhiều phiên Wipe / Account liên tiếp)
+            if (entries.count > 2000) {
+                [entries removeObjectsInRange:NSMakeRange(0, entries.count - 2000)];
             }
         }
 
@@ -5156,6 +5158,52 @@ static void append_to_har_file(NSDictionary *entryDict) {
             }
         }
     });
+}
+
+static void insert_har_session_marker(NSString *timestamp, NSString *machine, NSString *idfv) {
+    NSString *url = [NSString stringWithFormat:@"https://zalotweak.internal/session-marker/wipe?time=%@&machine=%@&idfv=%@",
+                     timestamp ?: @"", machine ?: @"iPhone", idfv ?: @"N/A"];
+    NSDictionary *markerEntry = @{
+        @"startedDateTime": timestamp ?: @"",
+        @"time": @(0),
+        @"comment": [NSString stringWithFormat:@"🔄 === WIPE / CẤP PROFILE MỚI (%@) ===", timestamp ?: @""],
+        @"request": @{
+            @"method": @"MARKER",
+            @"url": url,
+            @"httpVersion": @"HTTP/1.1",
+            @"cookies": @[],
+            @"headers": @[
+                @{@"name": @"X-ZaloTweak-Event", @"value": @"WIPE_AND_NEW_PROFILE"},
+                @{@"name": @"X-ZaloTweak-Machine", @"value": machine ?: @"iPhone"},
+                @{@"name": @"X-ZaloTweak-IDFV", @"value": idfv ?: @"N/A"}
+            ],
+            @"queryString": @[],
+            @"headersSize": @(-1),
+            @"bodySize": @(0)
+        },
+        @"response": @{
+            @"status": @(200),
+            @"statusText": @"SESSION_WIPED_OK",
+            @"httpVersion": @"HTTP/1.1",
+            @"cookies": @[],
+            @"headers": @[],
+            @"content": @{
+                @"size": @(0),
+                @"mimeType": @"text/plain",
+                @"text": @"New profile generated. Subsequent entries belong to this new session."
+            },
+            @"redirectURL": @"",
+            @"headersSize": @(-1),
+            @"bodySize": @(0)
+        },
+        @"cache": @{},
+        @"timings": @{
+            @"send": @(0),
+            @"wait": @(0),
+            @"receive": @(0)
+        }
+    };
+    append_to_har_file(markerEntry);
 }
 
 static NSInteger s_runtime_last_centralized_status = 0;
