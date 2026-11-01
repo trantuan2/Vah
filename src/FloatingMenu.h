@@ -22,6 +22,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)showColdBootBanner;
 - (void)presentMainMenuFrom:(nullable UIViewController *)presentingVC;
 - (void)showPreRegDiagnosticFrom:(UIViewController *)top;
+- (void)showIdleSocketRadarFrom:(UIViewController *)top;
 - (void)showAdvancedSettingsFrom:(UIViewController *)top;
 - (void)showHardwareSpoofSettingsFrom:(UIViewController *)top;
 - (void)startAutoUSWipeSequenceFrom:(UIViewController *)top;

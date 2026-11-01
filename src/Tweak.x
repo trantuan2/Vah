@@ -47,6 +47,11 @@ __attribute__((visibility("default"))) NSInteger zt_get_qos_error_count(void);
 __attribute__((visibility("default"))) int zt_get_masked_ifaddrs(struct ifaddrs **ifap);
 __attribute__((visibility("default"))) void zt_log_audit(NSString *category, NSString *detail);
 __attribute__((visibility("default"))) void zt_reset_mach_clock_anchors(void);
+__attribute__((visibility("default"))) NSArray<NSDictionary *> *zt_get_recent_sockets(void);
+__attribute__((visibility("default"))) uint64_t zt_get_total_sockets_count(void);
+__attribute__((visibility("default"))) time_t zt_get_last_socket_activity_time(void);
+__attribute__((visibility("default"))) time_t zt_get_session_start_time(void);
+__attribute__((visibility("default"))) BOOL zt_get_has_received_scan_id(void);
 
 static void (*dynamic_MSHookFunction)(void *symbol, void *replace, void **result) = NULL;
 #if __has_feature(ptrauth_calls)
@@ -995,7 +1000,7 @@ static void purge_entire_sandbox_safely(void) {
         self.currentVoIPToken = dict[@"currentVoIPToken"] ?: @"";
         self.spoofedVoIPToken = dict[@"spoofedVoIPToken"] ?: @"";
         self.lastWipedVoIPToken = dict[@"lastWipedVoIPToken"] ?: @"";
-        self.spoofContinuousCPUClock = (dict[@"spoofContinuousCPUClock"] != nil) ? [dict[@"spoofContinuousCPUClock"] boolValue] : YES;
+        self.spoofContinuousCPUClock = (dict[@"spoofContinuousCPUClock"] != nil) ? [dict[@"spoofContinuousCPUClock"] boolValue] : NO;
         self.spoofVoIPPushToken = (dict[@"spoofVoIPPushToken"] != nil) ? [dict[@"spoofVoIPPushToken"] boolValue] : NO;
         self.resetTCCPromptOnWipe = (dict[@"resetTCCPromptOnWipe"] != nil) ? [dict[@"resetTCCPromptOnWipe"] boolValue] : YES;
         self.contactsPermissionDetermined = [dict[@"contactsPermissionDetermined"] boolValue];
@@ -1353,6 +1358,7 @@ NSString *generate_random_mac(void) {
     self.cameraPermissionDetermined = NO;
     self.micPermissionDetermined = NO;
     self.locationPermissionDetermined = NO;
+    self.spoofContinuousCPUClock = NO;
 
     logAudit(@"DEVICE-GEN", [NSString stringWithFormat:@"Đã sinh máy ngẫu nhiên mới: %@ (%@) | iOS: %@ (%@) | RAM: %.1fGB | L2: %lluMB | Màn: %.0fx%.0f@%.0fx | Vùng: %@ (%@) | Tên: %@",
               self.deviceMachine, self.deviceModel, self.systemVersion, self.kernOsVersion,
@@ -1507,7 +1513,7 @@ static void logAudit(NSString *category, NSString *detail) {
 
     NSString *dedupKey = [NSString stringWithFormat:@"%@:%@", category, safeDetail];
     dispatch_async(auditQueue, ^{
-        BOOL isNetworkEvent = [category containsString:@"HTTP"] || [category containsString:@"HAR"] || [category containsString:@"NET"];
+        BOOL isNetworkEvent = [category containsString:@"HTTP"] || [category containsString:@"HAR"] || [category containsString:@"NET"] || [category containsString:@"SOCKET"] || [category containsString:@"IDLE"];
         if (!isNetworkEvent) {
             if ([loggedAuditKeys containsObject:dedupKey]) {
                 return;
@@ -2742,7 +2748,8 @@ static CTCarrier *get_fake_carrier(void) {
 
 - (NSString *)dataServiceIdentifier {
     if (!is_tweak_active()) return %orig;
-    return @"0000000100000001";
+    // iPhone 7/8/X là thiết bị Single-SIM vật lý, tài liệu Apple quy định rõ property này luôn trả về nil
+    return nil;
 }
 
 - (CTCarrier *)subscriberCellularProvider {
@@ -2757,14 +2764,13 @@ static CTCarrier *get_fake_carrier(void) {
     if (c) {
         NSDictionary *origDict = %orig;
         if (origDict && origDict.count > 0) {
-            NSMutableDictionary *mut = [NSMutableDictionary dictionaryWithCapacity:origDict.count + 1];
+            NSMutableDictionary *mut = [NSMutableDictionary dictionaryWithCapacity:origDict.count];
             for (id key in origDict.allKeys) {
                 mut[key] = c;
             }
-            mut[@"0000000100000001"] = c;
             return mut;
         }
-        return @{@"0000000100000001": c};
+        return @{};
     }
     return %orig;
 }
@@ -2773,14 +2779,13 @@ static CTCarrier *get_fake_carrier(void) {
     if (!is_tweak_active()) return %orig;
     NSDictionary *origDict = %orig;
     if (origDict && origDict.count > 0) {
-        NSMutableDictionary *mut = [NSMutableDictionary dictionaryWithCapacity:origDict.count + 1];
+        NSMutableDictionary *mut = [NSMutableDictionary dictionaryWithCapacity:origDict.count];
         for (id key in origDict.allKeys) {
             mut[key] = @"CTRadioAccessTechnologyLTE";
         }
-        mut[@"0000000100000001"] = @"CTRadioAccessTechnologyLTE";
         return mut;
     }
-    return @{@"0000000100000001": @"CTRadioAccessTechnologyLTE"};
+    return %orig;
 }
 
 - (NSString *)currentRadioAccessTechnology {
@@ -2926,8 +2931,8 @@ static void get_consistent_uptimes(double *outContUptime, double *outAwakeUptime
         contSec = 43200.0; // 12h mặc định
     }
 
-    // Thời gian ngủ tự nhiên của máy phân bổ đa dạng theo thói quen người dùng (từ 25% đến 68% tổng thời gian máy bật)
-    double sleepRatio = 0.25 + (double)((bootSec * 2654435761ULL) % 430ULL) / 1000.0;
+    // Thời gian ngủ tự nhiên của người dùng di động (từ 48% đến 55% tổng thời gian máy bật, tương ứng Awake 45% - 52%)
+    double sleepRatio = 0.48 + (double)((bootSec * 2654435761ULL) % 70ULL) / 1000.0;
     double awakeSec = contSec * (1.0 - sleepRatio);
     if (awakeSec < 0.0) awakeSec = 0.0;
     if (awakeSec > contSec) awakeSec = contSec;
@@ -3693,6 +3698,267 @@ __attribute__((visibility("default"))) int zt_get_masked_ifaddrs(struct ifaddrs 
     return my_getifaddrs(ifap);
 }
 
+// ==========================================
+// RADAR GIÁM SÁT KẾT NỐI SOCKET & TREO NGÂM (LIVE SOCKET & IDLE RADAR)
+// ==========================================
+#define MAX_LIVE_SOCKETS 32
+
+typedef struct {
+    char ip[64];
+    int port;
+    time_t timestamp;
+    char service[48];
+    char caller[96];
+} ZTLiveSocketRecord;
+
+static ZTLiveSocketRecord s_live_sockets[MAX_LIVE_SOCKETS];
+static int s_live_socket_count = 0;
+static pthread_mutex_t s_socket_radar_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t s_total_sockets_connected = 0;
+static time_t s_last_socket_activity_time = 0;
+static time_t s_session_start_time = 0;
+static BOOL s_has_received_scan_id = NO;
+
+static void record_live_socket(const char *ip, int port, const char *service, const char *caller) {
+    if (!ip || port <= 0) return;
+    pthread_mutex_lock(&s_socket_radar_lock);
+    s_total_sockets_connected++;
+    s_last_socket_activity_time = time(NULL);
+    if (s_session_start_time == 0) s_session_start_time = s_last_socket_activity_time;
+
+    int idx = (s_live_socket_count < MAX_LIVE_SOCKETS) ? s_live_socket_count : (MAX_LIVE_SOCKETS - 1);
+    if (s_live_socket_count >= MAX_LIVE_SOCKETS) {
+        memmove(&s_live_sockets[0], &s_live_sockets[1], sizeof(ZTLiveSocketRecord) * (MAX_LIVE_SOCKETS - 1));
+    } else {
+        s_live_socket_count++;
+    }
+
+    strncpy(s_live_sockets[idx].ip, ip, sizeof(s_live_sockets[idx].ip) - 1);
+    s_live_sockets[idx].ip[sizeof(s_live_sockets[idx].ip) - 1] = '\0';
+    s_live_sockets[idx].port = port;
+    s_live_sockets[idx].timestamp = s_last_socket_activity_time;
+    strncpy(s_live_sockets[idx].service, service ?: "TCP", sizeof(s_live_sockets[idx].service) - 1);
+    s_live_sockets[idx].service[sizeof(s_live_sockets[idx].service) - 1] = '\0';
+    strncpy(s_live_sockets[idx].caller, caller ?: "ZaloCore", sizeof(s_live_sockets[idx].caller) - 1);
+    s_live_sockets[idx].caller[sizeof(s_live_sockets[idx].caller) - 1] = '\0';
+
+    pthread_mutex_unlock(&s_socket_radar_lock);
+}
+
+__attribute__((visibility("default"))) NSArray<NSDictionary *> *zt_get_recent_sockets(void) {
+    NSMutableArray *arr = [NSMutableArray array];
+    pthread_mutex_lock(&s_socket_radar_lock);
+    for (int i = s_live_socket_count - 1; i >= 0; i--) {
+        [arr addObject:@{
+            @"ip": [NSString stringWithUTF8String:s_live_sockets[i].ip],
+            @"port": @(s_live_sockets[i].port),
+            @"timestamp": @((long long)s_live_sockets[i].timestamp),
+            @"service": [NSString stringWithUTF8String:s_live_sockets[i].service],
+            @"caller": [NSString stringWithUTF8String:s_live_sockets[i].caller]
+        }];
+    }
+    pthread_mutex_unlock(&s_socket_radar_lock);
+    return arr;
+}
+
+__attribute__((visibility("default"))) uint64_t zt_get_total_sockets_count(void) {
+    return s_total_sockets_connected;
+}
+
+__attribute__((visibility("default"))) time_t zt_get_last_socket_activity_time(void) {
+    return s_last_socket_activity_time;
+}
+
+__attribute__((visibility("default"))) time_t zt_get_session_start_time(void) {
+    return s_session_start_time ?: time(NULL);
+}
+
+__attribute__((visibility("default"))) BOOL zt_get_has_received_scan_id(void) {
+    return s_has_received_scan_id;
+}
+
+static uint64_t s_total_bytes_sent = 0;
+static uint64_t s_total_bytes_recv = 0;
+
+__attribute__((visibility("default"))) uint64_t zt_get_total_bytes_sent(void) {
+    return s_total_bytes_sent;
+}
+
+__attribute__((visibility("default"))) uint64_t zt_get_total_bytes_recv(void) {
+    return s_total_bytes_recv;
+}
+
+static inline BOOL get_socket_peer_info(int sockfd, char *ipOut, size_t ipLen, int *portOut) {
+    if (sockfd < 0 || !ipOut || !portOut) return NO;
+    struct sockaddr_storage addr;
+    socklen_t len = sizeof(addr);
+    if (getpeername(sockfd, (struct sockaddr *)&addr, &len) == 0) {
+        if (addr.ss_family == AF_INET) {
+            struct sockaddr_in *sin = (struct sockaddr_in *)&addr;
+            inet_ntop(AF_INET, &sin->sin_addr, ipOut, (socklen_t)ipLen);
+            *portOut = ntohs(sin->sin_port);
+            return YES;
+        } else if (addr.ss_family == AF_INET6) {
+            struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&addr;
+            inet_ntop(AF_INET6, &sin6->sin6_addr, ipOut, (socklen_t)ipLen);
+            *portOut = ntohs(sin6->sin6_port);
+            return YES;
+        }
+    }
+    return NO;
+}
+
+// Format 100% full payload (HEX + ASCII printable) không cắt xén bất kỳ byte nào từ đầu đến cuối
+static NSString *format_full_packet_hexdump(const unsigned char *data, size_t len) {
+    if (!data || len == 0) return @"";
+    NSMutableString *str = [NSMutableString stringWithCapacity:len * 4 + 64];
+    for (size_t i = 0; i < len; i += 16) {
+        [str appendFormat:@"\n  %04zx: ", i];
+        for (size_t j = 0; j < 16; j++) {
+            if (i + j < len) {
+                [str appendFormat:@"%02X ", data[i + j]];
+            } else {
+                [str appendString:@"   "];
+            }
+            if (j == 7) [str appendString:@" "];
+        }
+        [str appendString:@" |"];
+        for (size_t j = 0; j < 16; j++) {
+            if (i + j < len) {
+                unsigned char c = data[i + j];
+                [str appendFormat:@"%c", (c >= 32 && c <= 126) ? c : '.'];
+            }
+        }
+        [str appendString:@"|"];
+    }
+    return str;
+}
+
+static __thread BOOL s_in_socket_hook = NO;
+
+static int (*orig_connect)(int sockfd, const struct sockaddr *addr, socklen_t addrlen) = NULL;
+static int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+    if (addr && is_tweak_active()) {
+        char ipStr[INET6_ADDRSTRLEN] = {0};
+        int port = 0;
+        int family = addr->sa_family;
+        if (family == AF_INET) {
+            struct sockaddr_in *sin = (struct sockaddr_in *)addr;
+            inet_ntop(AF_INET, &sin->sin_addr, ipStr, sizeof(ipStr));
+            port = ntohs(sin->sin_port);
+        } else if (family == AF_INET6) {
+            struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)addr;
+            inet_ntop(AF_INET6, &sin6->sin6_addr, ipStr, sizeof(ipStr));
+            port = ntohs(sin6->sin6_port);
+        }
+
+        if (ipStr[0] != '\0' && port > 0) {
+            if (strcmp(ipStr, "127.0.0.1") != 0 && strcmp(ipStr, "::1") != 0) {
+                @autoreleasepool {
+                    void *c0 = __builtin_return_address(0);
+                    NSString *caller = format_caller_info(c0);
+
+                    const char *service = "TCP/Data";
+                    if (port == 443) service = "HTTPS/TLS";
+                    else if (port == 80) service = "HTTP";
+                    else if (port == 5222 || port == 5223) service = "Zalo-Binary-Push (5222/5223)";
+                    else if (port == 14000) service = "Zalo-QoS-Talk (14000)";
+                    else if (port == 1080) service = "Zalo-LongPoll (1080)";
+                    else if (port == 8080) service = "Zalo-Proxy-Alt (8080)";
+                    else if (port == 3478 || port == 19302) service = "WebRTC-STUN";
+                    else service = "Zalo-Cổng-Riêng";
+
+                    record_live_socket(ipStr, port, service, [caller UTF8String]);
+
+                    logAudit(@"SOCKET-RADAR", [NSString stringWithFormat:@"🔌 [CONNECT] Kết nối: %s:%d (%s) | Caller: %@", ipStr, port, service, caller]);
+                }
+            }
+        }
+    }
+    return orig_connect ? orig_connect(sockfd, addr, addrlen) : connect(sockfd, addr, addrlen);
+}
+
+// Hook POSIX send: Ghi nhận 100% full payload dữ liệu gửi đi (không cắt xén)
+static ssize_t (*orig_send)(int socket, const void *buffer, size_t length, int flags) = NULL;
+static ssize_t my_send(int socket, const void *buffer, size_t length, int flags) {
+    ssize_t ret = orig_send ? orig_send(socket, buffer, length, flags) : send(socket, buffer, length, flags);
+    if (ret > 0 && !s_in_socket_hook && is_tweak_active() && buffer) {
+        s_in_socket_hook = YES;
+        @autoreleasepool {
+            char ipStr[INET6_ADDRSTRLEN] = {0};
+            int port = 0;
+            if (get_socket_peer_info(socket, ipStr, sizeof(ipStr), &port)) {
+                if (strcmp(ipStr, "127.0.0.1") != 0 && strcmp(ipStr, "::1") != 0 && port > 0) {
+                    pthread_mutex_lock(&s_socket_radar_lock);
+                    s_total_bytes_sent += (uint64_t)ret;
+                    s_last_socket_activity_time = time(NULL);
+                    pthread_mutex_unlock(&s_socket_radar_lock);
+
+                    NSString *dump = format_full_packet_hexdump((const unsigned char *)buffer, (size_t)ret);
+                    void *c0 = __builtin_return_address(0);
+                    NSString *caller = format_caller_info(c0);
+                    logAudit(@"SOCKET-DATA", [NSString stringWithFormat:@"⬆️ [SEND] %s:%d | Size: %zd bytes | Caller: %@%@", ipStr, port, ret, caller, dump]);
+                }
+            }
+        }
+        s_in_socket_hook = NO;
+    }
+    return ret;
+}
+
+// Hook POSIX recv: Ghi nhận 100% full payload dữ liệu máy chủ trả về (không cắt xén)
+static ssize_t (*orig_recv)(int socket, void *buffer, size_t length, int flags) = NULL;
+static ssize_t my_recv(int socket, void *buffer, size_t length, int flags) {
+    ssize_t ret = orig_recv ? orig_recv(socket, buffer, length, flags) : recv(socket, buffer, length, flags);
+    if (ret > 0 && !s_in_socket_hook && is_tweak_active() && buffer) {
+        s_in_socket_hook = YES;
+        @autoreleasepool {
+            char ipStr[INET6_ADDRSTRLEN] = {0};
+            int port = 0;
+            if (get_socket_peer_info(socket, ipStr, sizeof(ipStr), &port)) {
+                if (strcmp(ipStr, "127.0.0.1") != 0 && strcmp(ipStr, "::1") != 0 && port > 0) {
+                    pthread_mutex_lock(&s_socket_radar_lock);
+                    s_total_bytes_recv += (uint64_t)ret;
+                    s_last_socket_activity_time = time(NULL);
+                    pthread_mutex_unlock(&s_socket_radar_lock);
+
+                    NSString *dump = format_full_packet_hexdump((const unsigned char *)buffer, (size_t)ret);
+                    void *c0 = __builtin_return_address(0);
+                    NSString *caller = format_caller_info(c0);
+                    logAudit(@"SOCKET-DATA", [NSString stringWithFormat:@"⬇️ [RECV] %s:%d | Size: %zd bytes | Caller: %@%@", ipStr, port, ret, caller, dump]);
+                }
+            }
+        }
+        s_in_socket_hook = NO;
+    }
+    return ret;
+}
+
+// Timer định kỳ 10 phút ghi nhận tình trạng treo ngâm vào ZaloAudit.log
+static dispatch_source_t s_idle_radar_timer = NULL;
+static void start_idle_radar_timer_if_needed(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        dispatch_queue_t queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0);
+        s_idle_radar_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
+        if (s_idle_radar_timer) {
+            dispatch_source_set_timer(s_idle_radar_timer,
+                                      dispatch_time(DISPATCH_TIME_NOW, 600 * NSEC_PER_SEC),
+                                      600 * NSEC_PER_SEC,
+                                      10 * NSEC_PER_SEC);
+            dispatch_source_set_event_handler(s_idle_radar_timer, ^{
+                if (!is_tweak_active()) return;
+                time_t now = time(NULL);
+                time_t idleSec = s_last_socket_activity_time ? (now - s_last_socket_activity_time) : 0;
+                time_t sessionSec = s_session_start_time ? (now - s_session_start_time) : 0;
+                logAudit(@"IDLE-RADAR", [NSString stringWithFormat:@"⏱️ [TREO NGÂM ĐỊNH KỲ] Đã chạy: %ld phút | Im lặng: %ld giây | Tổng socket: %llu | Gửi: %llu bytes | Nhận: %llu bytes",
+                         (long)(sessionSec / 60), (long)idleSec, (unsigned long long)s_total_sockets_connected, (unsigned long long)s_total_bytes_sent, (unsigned long long)s_total_bytes_recv]);
+            });
+            dispatch_resume(s_idle_radar_timer);
+        }
+    });
+}
+
 
 
 
@@ -4412,9 +4678,9 @@ static CFTypeRef my_MGCopyAnswer(CFStringRef property) {
         return orig_MGCopyAnswer ? orig_MGCopyAnswer(property) : NULL;
     }
     if ([prop isEqualToString:@"UniqueDeviceID"]) {
-        NSString *udid = [[settings.spoofedIDFV stringByReplacingOccurrencesOfString:@"-" withString:@""] lowercaseString];
         s_in_mg = NO;
-        return (__bridge_retained CFTypeRef)[udid copy];
+        // App Store apps không có quyền đọc UniqueDeviceID trên iOS 7+ -> Trả NULL chuẩn Apple Sandbox
+        return NULL;
     }
     if ([prop isEqualToString:@"WifiAddress"]) {
         s_in_mg = NO;
@@ -5229,6 +5495,13 @@ __attribute__((visibility("default"))) void zt_reset_runtime_counters(void) {
     s_runtime_last_centralized_status = 0;
     s_runtime_last_centralized_did = nil;
     s_runtime_qos_error_count = 0;
+    pthread_mutex_lock(&s_socket_radar_lock);
+    s_live_socket_count = 0;
+    s_total_sockets_connected = 0;
+    s_session_start_time = time(NULL);
+    s_last_socket_activity_time = s_session_start_time;
+    s_has_received_scan_id = NO;
+    pthread_mutex_unlock(&s_socket_radar_lock);
 }
 
 __attribute__((visibility("default"))) void zt_log_audit(NSString *category, NSString *detail) {
@@ -5396,6 +5669,10 @@ static __attribute__((unused)) void record_har_traffic(NSURLRequest *request, NS
                         }
                     }
                 }
+            }
+            if ([respBodyStr containsString:@"scanId"]) {
+                s_has_received_scan_id = YES;
+                logAudit(@"SECURITY-RADAR", @"⚠️ [SERVER LỆNH QUÉT] Máy chủ Zalo vừa gửi cấu hình quét ứng dụng (scanId) qua kênh ngầm!");
             }
         } else {
             [logText appendFormat:@"\n(Dữ liệu nhị phân %lu bytes)", (unsigned long)respData.length];
@@ -6300,6 +6577,12 @@ static void zt_early_keychain_purge_if_needed(void) {
             universal_hook_c_function("_CFCopyServerVersionDictionary", cfSrvVer, (void *)my_CFCopyServerVersionDictionary, (void **)&orig_CFCopyServerVersionDictionary);
         }
 
+        // Hook POSIX Socket Connect, Send, Recv (Bắt trọn 100% full payload các cổng riêng và giám sát treo ngâm thời gian thực)
+        universal_hook_c_function("connect", (void *)connect, (void *)my_connect, (void **)&orig_connect);
+        universal_hook_c_function("send", (void *)send, (void *)my_send, (void **)&orig_send);
+        universal_hook_c_function("recv", (void *)recv, (void *)my_recv, (void **)&orig_recv);
+        start_idle_radar_timer_if_needed();
+
         // Hook Hardware Uptime Clocks Radar (Chế độ Radar Giám Sát, bảo vệ 100% socket mạng khỏi lỗi EINVAL 22)
         universal_hook_c_function("clock_gettime", (void *)clock_gettime, (void *)my_clock_gettime, (void **)&orig_clock_gettime);
         universal_hook_c_function("mach_continuous_time", (void *)mach_continuous_time, (void *)my_mach_continuous_time, (void **)&orig_mach_continuous_time);
@@ -6332,9 +6615,12 @@ static void zt_early_keychain_purge_if_needed(void) {
                 { "dladdr", (void *)my_dladdr, (void **)&orig_dladdr },
                 { "class_getImageName", (void *)my_class_getImageName, (void **)&orig_class_getImageName },
                 { "objc_copyImageNames", (void *)my_objc_copyImageNames, (void **)&orig_objc_copyImageNames },
-                { "objc_copyClassList", (void *)my_objc_copyClassList, (void **)&orig_objc_copyClassList }
+                { "objc_copyClassList", (void *)my_objc_copyClassList, (void **)&orig_objc_copyClassList },
+                { "connect", (void *)my_connect, (void **)&orig_connect },
+                { "send", (void *)my_send, (void **)&orig_send },
+                { "recv", (void *)my_recv, (void **)&orig_recv }
             };
-            rebind_symbols(dyld_rebs, 5);
+            rebind_symbols(dyld_rebs, sizeof(dyld_rebs) / sizeof(struct rebinding));
         }
 
         if (![[ZTSecurityManager sharedManager] isLicenseValid]) {

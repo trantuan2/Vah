@@ -23,6 +23,13 @@
 
 extern void zt_flush_audit_and_har_queues_sync(void) __attribute__((weak_import));
 extern NSArray<NSString *> *zt_get_discovered_security_modules(void) __attribute__((weak_import));
+extern NSArray<NSDictionary *> *zt_get_recent_sockets(void) __attribute__((weak_import));
+extern uint64_t zt_get_total_sockets_count(void) __attribute__((weak_import));
+extern time_t zt_get_last_socket_activity_time(void) __attribute__((weak_import));
+extern time_t zt_get_session_start_time(void) __attribute__((weak_import));
+extern BOOL zt_get_has_received_scan_id(void) __attribute__((weak_import));
+extern uint64_t zt_get_total_bytes_sent(void) __attribute__((weak_import));
+extern uint64_t zt_get_total_bytes_recv(void) __attribute__((weak_import));
 
 static __attribute__((unused)) NSString *zt_preview_sha256_token_hex(NSString *prefix, NSString *seedStr) {
     if (!seedStr || seedStr.length == 0) return @"Chưa cấp (Cần Wipe)";
@@ -837,8 +844,16 @@ UIViewController *ZTGetTopViewController(void) {
         [self showPreRegDiagnosticFrom:top];
     }]];
 
-    // Nút 6: Cài Đặt Khác & Bản Quyền
-    NSString *advButtonTitle = isLicensed ? [NSString stringWithFormat:@"⚙️ [6️⃣] Cài Đặt Khác (Key: %@)", licStatusText] : @"🛡️ [6️⃣] KÍCH HOẠT BẢN QUYỀN & CÀI ĐẶT";
+    // Nút 6: Radar Giám Sát Treo Ngâm (Live Sockets & Idle Monitor)
+    NSString *radarTitle = @"📡 [6️⃣] RADAR GIÁM SÁT TREO NGÂM (LIVE SOCKETS)";
+    [sheet addAction:[UIAlertAction actionWithTitle:radarTitle
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(UIAlertAction *action) {
+        [self showIdleSocketRadarFrom:top];
+    }]];
+
+    // Nút 7: Cài Đặt Khác & Bản Quyền
+    NSString *advButtonTitle = isLicensed ? [NSString stringWithFormat:@"⚙️ [7️⃣] Cài Đặt Khác (Key: %@)", licStatusText] : @"🛡️ [7️⃣] KÍCH HOẠT BẢN QUYỀN & CÀI ĐẶT";
     [sheet addAction:[UIAlertAction actionWithTitle:advButtonTitle
                                              style:UIAlertActionStyleDefault
                                            handler:^(UIAlertAction *action) {
@@ -854,6 +869,71 @@ UIViewController *ZTGetTopViewController(void) {
     }
 
     [top presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)showIdleSocketRadarFrom:(UIViewController *)top {
+    UIViewController *presenter = top ?: get_top_view_controller();
+    if (!presenter) return;
+
+    time_t startTime = (zt_get_session_start_time != NULL) ? zt_get_session_start_time() : time(NULL);
+    time_t now = time(NULL);
+    long diffSec = (long)(now - startTime);
+    if (diffSec < 0) diffSec = 0;
+    long hours = diffSec / 3600;
+    long mins = (diffSec % 3600) / 60;
+    long secs = diffSec % 60;
+
+    uint64_t totalSockets = (zt_get_total_sockets_count != NULL) ? zt_get_total_sockets_count() : 0;
+    time_t lastSockTime = (zt_get_last_socket_activity_time != NULL) ? zt_get_last_socket_activity_time() : 0;
+    long lastSockDiff = (lastSockTime > 0) ? (long)(now - lastSockTime) : -1;
+
+    BOOL hasScanId = (zt_get_has_received_scan_id != NULL) ? zt_get_has_received_scan_id() : NO;
+    NSString *scanStatus = hasScanId ? @"⚠️ CẢNH BÁO: Server vừa gửi lệnh quét ứng dụng ngầm!" : @"🟢 AN TOÀN: Không có lệnh quét hay can thiệp từ Server";
+
+    NSMutableString *msg = [NSMutableString string];
+    [msg appendFormat:@"⏱️ Thời Gian Treo Ngâm: %02ldh %02ldm %02lds\n", hours, mins, secs];
+    [msg appendFormat:@"🔌 Tổng Kết Nối Socket: %llu kết nối\n", totalSockets];
+    uint64_t bytesSent = (zt_get_total_bytes_sent != NULL) ? zt_get_total_bytes_sent() : 0;
+    uint64_t bytesRecv = (zt_get_total_bytes_recv != NULL) ? zt_get_total_bytes_recv() : 0;
+    [msg appendFormat:@"📊 Lưu Lượng Socket: Gửi %llu B (%.1f KB) | Nhận %llu B (%.1f KB)\n", bytesSent, bytesSent / 1024.0, bytesRecv, bytesRecv / 1024.0];
+    if (lastSockDiff >= 0) {
+        [msg appendFormat:@"📡 Hoạt Động Socket Cuối: %ld giây trước\n", lastSockDiff];
+    } else {
+        [msg appendString:@"📡 Hoạt Động Socket Cuối: Chưa phát sinh\n"];
+    }
+    [msg appendFormat:@"🛡️ Tình Trạng An Ninh: %@\n\n", scanStatus];
+    [msg appendString:@"📋 DANH SÁCH CÁC CỔNG & IP GẦN NHẤT:\n"];
+
+    NSArray<NSDictionary *> *recentSockets = (zt_get_recent_sockets != NULL) ? zt_get_recent_sockets() : @[];
+    if (recentSockets.count == 0) {
+        [msg appendString:@"(Chưa ghi nhận kết nối Socket TCP nào qua cổng riêng)"];
+    } else {
+        NSUInteger count = MIN(recentSockets.count, (NSUInteger)8);
+        for (NSUInteger i = 0; i < count; i++) {
+            NSDictionary *entry = recentSockets[i];
+            NSString *ip = entry[@"ip"] ?: @"";
+            int port = [entry[@"port"] intValue];
+            NSString *service = entry[@"service"] ?: @"TCP";
+            long long ts = [entry[@"timestamp"] longLongValue];
+            long ago = (long)(now - ts);
+            if (ago < 0) ago = 0;
+            [msg appendFormat:@"• [%@] :%d (%@) - %lds trước\n", ip, port, service, ago];
+        }
+    }
+
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"📡 RADAR GIÁM SÁT TREO NGÂM (LIVE SOCKETS)"
+                                                                   message:msg
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+
+    [alert addAction:[UIAlertAction actionWithTitle:@"🔄 Làm Mới Dữ Liệu (Refresh)"
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(UIAlertAction *action) {
+        [self showIdleSocketRadarFrom:presenter];
+    }]];
+
+    [alert addAction:[UIAlertAction actionWithTitle:@"Đóng" style:UIAlertActionStyleCancel handler:nil]];
+
+    [presenter presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)showAdvancedSettingsFrom:(UIViewController *)top {
@@ -912,14 +992,14 @@ UIViewController *ZTGetTopViewController(void) {
 
     ZTSettings *s = [ZTSettings sharedSettings];
 
-    NSString *cpuStatus = s.spoofContinuousCPUClock ? @"🟢 ĐANG BẬT" : @"⚪ ĐANG TẮT";
+    NSString *cpuStatus = s.spoofContinuousCPUClock ? @"🟢 ĐANG BẬT" : @"🟢 ĐANG TẮT (PASSTHROUGH CHIP THẬT - CHUẨN SỐNG 100%)";
     NSString *voipStatus = s.spoofVoIPPushToken ? @"🟢 ĐANG BẬT (TỰ SINH 32-BYTE)" : @"🟢 ĐANG TẮT (TOKEN GỐC APPLE - KHUYÊN DÙNG)";
     NSString *tccStatus = s.resetTCCPromptOnWipe ? @"🟢 ĐANG BẬT" : @"⚪ ĐANG TẮT";
 
     NSString *msg = [NSString stringWithFormat:
                      @"1. Bộ đếm CPU (mach_time): %@\n"
-                     @"• Khi BẬT: Tự động đồng bộ số tick CPU khớp với bootTime hồ sơ mới (Chống tăng liền mạch nối đuôi giữa 2 acc).\n"
-                     @"• Khi TẮT: Đọc số tick CPU thật của máy (Bạn cần tắt nguồn khởi động lại máy để CPU về 0).\n\n"
+                     @"• Khi TẮT: Passthrough 100%% nhịp phần cứng chip A10 thật (Mô hình tạo 2 nick sống khỏe 0334400849 & 0933391468).\n"
+                     @"• Khi BẬT: Cộng offset giả lập đồng bộ với bootTime ảo.\n\n"
                      @"2. Token VoIP PushKit: %@\n"
                      @"• Khi BẬT: Tự sinh mã 32-byte VoIP theo từng Profile.\n"
                      @"• Khi TẮT: Dùng Token VoIP gốc Apple Gateway cấp (Khuyên dùng để Apple APNs xác thực 200 OK, tránh BadDeviceToken).\n\n"
@@ -933,7 +1013,7 @@ UIViewController *ZTGetTopViewController(void) {
                                                                    message:msg
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
 
-    NSString *toggleCPUTitle = s.spoofContinuousCPUClock ? @"⏱️ TẮT Đồng Bộ Bộ Đếm CPU" : @"⏱️ BẬT Đồng Bộ Bộ Đếm CPU (Khuyên Dùng)";
+    NSString *toggleCPUTitle = s.spoofContinuousCPUClock ? @"⏱️ Chuyển sang Dùng Nhịp CPU Thật (Khuyên Dùng - Chuẩn Sống)" : @"⏱️ BẬT Đồng Bộ Bộ Đếm CPU Giả";
     [alert addAction:[UIAlertAction actionWithTitle:toggleCPUTitle style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
         s.spoofContinuousCPUClock = !s.spoofContinuousCPUClock;
         [s saveSettings];
@@ -1044,8 +1124,8 @@ UIViewController *ZTGetTopViewController(void) {
     ZTSettings *s = [ZTSettings sharedSettings];
     uint64_t nowSec = (uint64_t)[[NSDate date] timeIntervalSince1970];
     double contUpSec = (nowSec > s.bootTimeSec && s.bootTimeSec > 0) ? (double)(nowSec - s.bootTimeSec) : 36000.0;
-    uint64_t ratioPermille = 720ULL + ((s.bootTimeSec * 2654435761ULL) % 160ULL);
-    double awakeUpSec = contUpSec * ((double)ratioPermille / 1000.0);
+    double sleepRatio = 0.48 + (double)((s.bootTimeSec * 2654435761ULL) % 70ULL) / 1000.0;
+    double awakeUpSec = contUpSec * (1.0 - sleepRatio);
     
     NSString *currentRegion = s.regionMode ?: @"VN";
     NSString *regionName = [currentRegion isEqualToString:@"US_STUDENT"] ? @"🇺🇸 Du Học Sinh Mỹ (+1)" :

@@ -106,34 +106,17 @@ typedef struct {
 // Bảng phiên bản iOS thực tế & Build ID chính xác của Apple (Tối thiểu 15.1+ để tương thích hệ thống)
 static const AppleOSRelease kAppleOSReleases[] = {
     // iOS 15 Releases (iPhone 6s / 6s Plus / SE 1 / iPhone 7 / 7 Plus)
-    {"15.4.1", "19E258",  15, NO,  1648746000ULL, "21.4.0"}, // 31/03/2022 17:00 UTC
-    {"15.5",   "19F77",   15, NO,  1652720400ULL, "21.5.0"}, // 16/05/2022 17:00 UTC
-    {"15.6",   "19G69",   15, NO,  1658336400ULL, "21.6.0"}, // 20/07/2022 17:00 UTC
-    {"15.6.1", "19G82",   15, NO,  1660755600ULL, "21.6.0"}, // 17/08/2022 17:00 UTC
-    {"15.7",   "19H12",   15, NO,  1663002000ULL, "21.6.0"}, // 12/09/2022 17:00 UTC
-    {"15.7.1", "19H117",  15, NO,  1666890000ULL, "21.6.0"}, // 27/10/2022 17:00 UTC
-    {"15.7.2", "19H218",  15, NO,  1670950800ULL, "21.6.0"}, // 13/12/2022 17:00 UTC
-    {"15.7.5", "19H332",  15, NO,  1681146000ULL, "21.6.0"}, // 10/04/2023 17:00 UTC
+    // Cố định vào các bản cập nhật bảo mật chính thức mới nhất của Apple (Mô hình số SỐNG: iOS 15.8 / 15.8.x)
     {"15.8",   "19H370",  15, YES, 1698253200ULL, "21.6.0"}, // 25/10/2023 17:00 UTC
     {"15.8.1", "19H380",  15, YES, 1705946400ULL, "21.6.0"}, // 22/01/2024 18:00 UTC
     {"15.8.2", "19H384",  15, YES, 1709661600ULL, "21.6.0"}, // 05/03/2024 18:00 UTC
     {"15.8.3", "19H386",  15, YES, 1722272400ULL, "21.6.0"}, // 29/07/2024 17:00 UTC
-    {"15.8.4", "19H390",  15, YES, 1743440400ULL, "21.6.0"}, // 31/03/2025 17:00 UTC
-    {"15.8.5", "19H394",  15, YES, 1757955600ULL, "21.6.0"}, // 15/09/2025 17:00 UTC
-    {"15.8.6", "19H402",  15, YES, 1769450400ULL, "21.6.0"}, // 26/01/2026 18:00 UTC
-    {"15.8.7", "19H411",  15, YES, 1773248400ULL, "21.6.0"}, // 11/03/2026 17:00 UTC
 
     // iOS 16 Releases (iPhone 8 / 8 Plus / X)
-    {"16.5",    "20F66",  16, NO,  1684429200ULL, "22.5.0"}, // 18/05/2023 17:00 UTC
-    {"16.6",    "20G75",  16, NO,  1690218000ULL, "22.6.0"}, // 24/07/2023 17:00 UTC
-    {"16.6.1",  "20G81",  16, NO,  1694106000ULL, "22.6.0"}, // 07/09/2023 17:00 UTC
     {"16.7.2",  "20H115", 16, YES, 1698253200ULL, "22.6.0"}, // 25/10/2023 17:00 UTC
     {"16.7.5",  "20H307", 16, YES, 1705946400ULL, "22.6.0"}, // 22/01/2024 18:00 UTC
+    {"16.7.8",  "20H343", 16, YES, 1715619600ULL, "22.6.0"}, // 13/05/2024 17:00 UTC
     {"16.7.10", "20H350", 16, YES, 1723050000ULL, "22.6.0"}, // 07/08/2024 17:00 UTC
-    {"16.7.11", "20H360", 16, YES, 1743440400ULL, "22.6.0"}, // 31/03/2025 17:00 UTC
-    {"16.7.12", "20H364", 16, YES, 1757955600ULL, "22.6.0"}, // 15/09/2025 17:00 UTC
-    {"16.7.13", "20H365", 16, YES, 1769450400ULL, "22.6.0"}, // 26/01/2026 18:00 UTC
-    {"16.7.14", "20H370", 16, YES, 1770055200ULL, "22.6.0"}, // 02/02/2026 18:00 UTC
 
     // iOS 17 Releases
     {"17.4",   "21E219",  17, NO,  1709661600ULL, "23.4.0"}, // 05/03/2024 18:00 UTC
@@ -569,12 +552,10 @@ static NSString *detect_real_system_machine(void) {
     // 20% máy chạy dài ngày không tắt (25 - 60 ngày)
     uint32_t uptimeRoll = arc4random_uniform(100);
     uint32_t uptimeSec = 0;
-    if (uptimeRoll < 20) {
-        uptimeSec = 43200 + arc4random_uniform(86400 * 3); // 12h - 3 ngày
-    } else if (uptimeRoll < 80) {
-        uptimeSec = 86400 * (3 + arc4random_uniform(21)) + arc4random_uniform(86399); // 3 - 24 ngày
+    if (uptimeRoll < 50) {
+        uptimeSec = 86400 + arc4random_uniform(86400 * 2) + arc4random_uniform(86399); // 1 - 3 ngày (24h - 72h)
     } else {
-        uptimeSec = 86400 * (25 + arc4random_uniform(36)) + arc4random_uniform(86399); // 25 - 60 ngày
+        uptimeSec = 86400 * 3 + arc4random_uniform(86400 * 4) + arc4random_uniform(86399); // 3 - 7 ngày (72h - 168h)
     }
     profile.bootTimeSec = nowSec - uptimeSec;
     if (profile.bootTimeSec % 60 == 0) profile.bootTimeSec += (1 + arc4random_uniform(58));
@@ -686,22 +667,19 @@ static NSString *detect_real_system_machine(void) {
     }
 
     // 3. Sandbox Container: Được tạo sau khi có user profile /var/mobile và trước thời điểm hiện tại
-    // Kịch bản tạo container:
-    // 35% Kịch bản A: Ứng dụng khôi phục cùng với hệ thống ban đầu -> Tạo container trong 1h - 48h sau setup
-    // 65% Kịch bản B: Ứng dụng tải mới từ App Store trong quá trình dùng máy -> Tạo container phân bố tự nhiên
-    BOOL isContainerFromBackup = (arc4random_uniform(100) < 35);
-    if (isContainerFromBackup) {
-        profile.deltaSandboxSec = profile.deltaMobileSec + 3600ULL + arc4random_uniform(86400 * 2);
-    } else {
-        uint64_t minSandbox = profile.birthTimeSec + profile.deltaMobileSec + 60ULL;
-        uint64_t maxSandbox = (nowSec > minSandbox + 3600ULL) ? (nowSec - 1800ULL) : minSandbox;
-        if (maxSandbox > minSandbox) {
-            uint64_t sandboxSpan = maxSandbox - minSandbox;
-            profile.deltaSandboxSec = profile.deltaMobileSec + 60ULL + (uint32_t)((arc4random_uniform(10000) / 10000.0) * sandboxSpan);
-        } else {
-            profile.deltaSandboxSec = profile.deltaMobileSec + 3600ULL + arc4random_uniform(7200);
-        }
+    // Mô phỏng người dùng tải ứng dụng Zalo từ App Store về máy dùng ổn định:
+    // Thời điểm cài Zalo phân bổ tự nhiên từ 5 đến 35 ngày trước thời điểm hiện tại (nhưng sau khi active máy ít nhất 2 ngày)
+    uint64_t daysAgo = 5ULL + arc4random_uniform(30); // 5 - 34 ngày trước
+    uint64_t candSandboxSec = (nowSec > daysAgo * 86400ULL) ? (nowSec - daysAgo * 86400ULL - arc4random_uniform(86400)) : (nowSec - 3600ULL);
+    
+    uint64_t minSandbox = profile.birthTimeSec + profile.deltaMobileSec + 86400ULL * 2ULL; // Sau kích hoạt máy ít nhất 2 ngày
+    if (candSandboxSec < minSandbox) {
+        candSandboxSec = minSandbox + 3600ULL * (1ULL + arc4random_uniform(48));
     }
+    if (candSandboxSec >= nowSec) {
+        candSandboxSec = nowSec - (1800ULL + arc4random_uniform(1800));
+    }
+    profile.deltaSandboxSec = (uint32_t)(candSandboxSec - profile.birthTimeSec);
 
     // Khử triệt để hiện tượng giây tròn :00, trùng phút/giây và tròn giờ chẵn giữa T_sandbox và T_boot
     uint64_t candSandbox = profile.birthTimeSec + profile.deltaSandboxSec;
