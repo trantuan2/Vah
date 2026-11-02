@@ -3070,40 +3070,31 @@ static uint64_t my_mach_continuous_time(void) {
     if (!is_tweak_active() || s_in_mach_anchor) {
         return realCont;
     }
-    void *c0 = __builtin_return_address(0);
-    if (!is_fast_zalo_caller(c0)) {
-        if (s_sys_cont_log_count < 3) {
-            s_sys_cont_log_count++;
-            s_in_mach_anchor = YES;
-            logAudit(@"CPU-CLOCK", [NSString stringWithFormat:@"🌐 [SYSTEM CALLER #%d] CFNetwork/Kernel gọi mach_continuous_time() từ %@ -> [GIỜ THẬT: %llu ticks]", s_sys_cont_log_count, format_caller_info(c0), realCont]);
-            s_in_mach_anchor = NO;
-        }
+    ZTSettings *s = [ZTSettings sharedSettings];
+    if (!s.spoofContinuousCPUClock || s.bootTimeSec <= 0) {
         return realCont;
     }
     init_mach_clock_offsets_once();
-    ZTSettings *s = [ZTSettings sharedSettings];
-    if (s.spoofContinuousCPUClock && s.bootTimeSec > 0) {
-        uint64_t contVal = (uint64_t)((int64_t)realCont + s_mach_cont_offset);
+    uint64_t contVal = (uint64_t)((int64_t)realCont + s_mach_cont_offset);
 
-        // Chốt sàn chuẩn max(contVal, prev) - Tuyệt đối không ép +1 nhân tạo
-        uint64_t prev = atomic_load(&s_max_returned_cont);
-        while (1) {
-            uint64_t target = (contVal > prev) ? contVal : prev;
-            if (atomic_compare_exchange_weak(&s_max_returned_cont, &prev, target)) {
-                contVal = target;
-                break;
-            }
+    // Chốt sàn chuẩn max(contVal, prev) - Tuyệt đối không ép +1 nhân tạo
+    uint64_t prev = atomic_load(&s_max_returned_cont);
+    while (1) {
+        uint64_t target = (contVal > prev) ? contVal : prev;
+        if (atomic_compare_exchange_weak(&s_max_returned_cont, &prev, target)) {
+            contVal = target;
+            break;
         }
-
-        if (s_zalo_cont_log_count < 4) {
-            s_zalo_cont_log_count++;
-            s_in_mach_anchor = YES;
-            logAudit(@"CPU-CLOCK", [NSString stringWithFormat:@"🎯 [ZALO CALLER #%d] Zalo gọi mach_continuous_time() từ %@ -> [GIỜ FAKE ĐỒNG BỘ: %llu ticks (%.1fs)]", s_zalo_cont_log_count, format_caller_info(c0), contVal, (double)contVal / 24000000.0]);
-            s_in_mach_anchor = NO;
-        }
-        return contVal;
     }
-    return realCont;
+
+    if (s_zalo_cont_log_count < 4) {
+        s_zalo_cont_log_count++;
+        s_in_mach_anchor = YES;
+        void *c0 = __builtin_return_address(0);
+        logAudit(@"CPU-CLOCK", [NSString stringWithFormat:@"🎯 [CLOCK-COHERENT] Gọi mach_continuous_time() từ %@ -> [ĐỒNG BỘ TOÀN TIẾN TRÌNH: %llu ticks (%.1fs)]", format_caller_info(c0), contVal, (double)contVal / 24000000.0]);
+        s_in_mach_anchor = NO;
+    }
+    return contVal;
 }
 
 static uint64_t my_mach_absolute_time(void) {
@@ -3111,40 +3102,31 @@ static uint64_t my_mach_absolute_time(void) {
     if (!is_tweak_active() || s_in_mach_anchor) {
         return realAbs;
     }
-    void *c0 = __builtin_return_address(0);
-    if (!is_fast_zalo_caller(c0)) {
-        if (s_sys_abs_log_count < 3) {
-            s_sys_abs_log_count++;
-            s_in_mach_anchor = YES;
-            logAudit(@"CPU-CLOCK", [NSString stringWithFormat:@"🌐 [SYSTEM CALLER #%d] CFNetwork/Kernel gọi mach_absolute_time() từ %@ -> [GIỜ THẬT: %llu ticks]", s_sys_abs_log_count, format_caller_info(c0), realAbs]);
-            s_in_mach_anchor = NO;
-        }
+    ZTSettings *s = [ZTSettings sharedSettings];
+    if (!s.spoofContinuousCPUClock || s.bootTimeSec <= 0) {
         return realAbs;
     }
     init_mach_clock_offsets_once();
-    ZTSettings *s = [ZTSettings sharedSettings];
-    if (s.spoofContinuousCPUClock && s.bootTimeSec > 0) {
-        uint64_t absVal = (uint64_t)((int64_t)realAbs + s_mach_abs_offset);
+    uint64_t absVal = (uint64_t)((int64_t)realAbs + s_mach_abs_offset);
 
-        // Chốt sàn chuẩn max(absVal, prev) - Tuyệt đối không ép +1 nhân tạo
-        uint64_t prev = atomic_load(&s_max_returned_abs);
-        while (1) {
-            uint64_t target = (absVal > prev) ? absVal : prev;
-            if (atomic_compare_exchange_weak(&s_max_returned_abs, &prev, target)) {
-                absVal = target;
-                break;
-            }
+    // Chốt sàn chuẩn max(absVal, prev) - Tuyệt đối không ép +1 nhân tạo
+    uint64_t prev = atomic_load(&s_max_returned_abs);
+    while (1) {
+        uint64_t target = (absVal > prev) ? absVal : prev;
+        if (atomic_compare_exchange_weak(&s_max_returned_abs, &prev, target)) {
+            absVal = target;
+            break;
         }
-
-        if (s_zalo_abs_log_count < 4) {
-            s_zalo_abs_log_count++;
-            s_in_mach_anchor = YES;
-            logAudit(@"CPU-CLOCK", [NSString stringWithFormat:@"🎯 [ZALO CALLER #%d] Zalo gọi mach_absolute_time() từ %@ -> [GIỜ FAKE ĐỒNG BỘ: %llu ticks (%.1fs)]", s_zalo_abs_log_count, format_caller_info(c0), absVal, (double)absVal / 24000000.0]);
-            s_in_mach_anchor = NO;
-        }
-        return absVal;
     }
-    return realAbs;
+
+    if (s_zalo_abs_log_count < 4) {
+        s_zalo_abs_log_count++;
+        s_in_mach_anchor = YES;
+        void *c0 = __builtin_return_address(0);
+        logAudit(@"CPU-CLOCK", [NSString stringWithFormat:@"🎯 [CLOCK-COHERENT] Gọi mach_absolute_time() từ %@ -> [ĐỒNG BỘ TOÀN TIẾN TRÌNH: %llu ticks (%.1fs)]", format_caller_info(c0), absVal, (double)absVal / 24000000.0]);
+        s_in_mach_anchor = NO;
+    }
+    return absVal;
 }
 
 static double s_bench_bg_wall_sec = 0.0;
@@ -3838,7 +3820,9 @@ static __thread BOOL s_in_socket_hook = NO;
 
 static int (*orig_connect)(int sockfd, const struct sockaddr *addr, socklen_t addrlen) = NULL;
 static int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
-    if (addr && is_tweak_active()) {
+    int ret = orig_connect ? orig_connect(sockfd, addr, addrlen) : connect(sockfd, addr, addrlen);
+    int saved_errno = errno;
+    if (addr && is_tweak_active() && !s_in_socket_hook) {
         char ipStr[INET6_ADDRSTRLEN] = {0};
         int port = 0;
         int family = addr->sa_family;
@@ -3852,85 +3836,124 @@ static int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen
             port = ntohs(sin6->sin6_port);
         }
 
-        if (ipStr[0] != '\0' && port > 0) {
-            if (strcmp(ipStr, "127.0.0.1") != 0 && strcmp(ipStr, "::1") != 0) {
-                @autoreleasepool {
-                    void *c0 = __builtin_return_address(0);
-                    NSString *caller = format_caller_info(c0);
+        if (ipStr[0] != '\0' && port > 0 && strcmp(ipStr, "127.0.0.1") != 0 && strcmp(ipStr, "::1") != 0) {
+            const char *service = "TCP/Data";
+            if (port == 443) service = "HTTPS/TLS";
+            else if (port == 80) service = "HTTP";
+            else if (port == 5222 || port == 5223) service = "Zalo-Binary-Push (5222/5223)";
+            else if (port == 14000) service = "Zalo-QoS-Talk (14000)";
+            else if (port == 1080) service = "Zalo-LongPoll (1080)";
+            else if (port == 8080) service = "Zalo-Proxy-Alt (8080)";
+            else if (port == 3478 || port == 19302) service = "WebRTC-STUN";
+            else service = "Zalo-Cổng-Riêng";
 
-                    const char *service = "TCP/Data";
-                    if (port == 443) service = "HTTPS/TLS";
-                    else if (port == 80) service = "HTTP";
-                    else if (port == 5222 || port == 5223) service = "Zalo-Binary-Push (5222/5223)";
-                    else if (port == 14000) service = "Zalo-QoS-Talk (14000)";
-                    else if (port == 1080) service = "Zalo-LongPoll (1080)";
-                    else if (port == 8080) service = "Zalo-Proxy-Alt (8080)";
-                    else if (port == 3478 || port == 19302) service = "WebRTC-STUN";
-                    else service = "Zalo-Cổng-Riêng";
+            void *c0 = __builtin_return_address(0);
+            NSString *caller = format_caller_info(c0);
+            record_live_socket(ipStr, port, service, [caller UTF8String]);
 
-                    record_live_socket(ipStr, port, service, [caller UTF8String]);
-
-                    logAudit(@"SOCKET-RADAR", [NSString stringWithFormat:@"🔌 [CONNECT] Kết nối: %s:%d (%s) | Caller: %@", ipStr, port, service, caller]);
-                }
-            }
+            // Ghi log bất đồng bộ ngầm, tuyệt đối không làm chậm tiến trình kết nối socket
+            NSString *ipString = [NSString stringWithUTF8String:ipStr];
+            NSString *srvString = [NSString stringWithUTF8String:service];
+            dispatch_async(auditQueue ?: dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+                logAudit(@"SOCKET-RADAR", [NSString stringWithFormat:@"🔌 [CONNECT] Kết nối: %@:%d (%@) | Caller: %@", ipString, port, srvString, caller]);
+            });
         }
     }
-    return orig_connect ? orig_connect(sockfd, addr, addrlen) : connect(sockfd, addr, addrlen);
-}
-
-// Hook POSIX send: Ghi nhận 100% full payload dữ liệu gửi đi (không cắt xén)
-static ssize_t (*orig_send)(int socket, const void *buffer, size_t length, int flags) = NULL;
-static ssize_t my_send(int socket, const void *buffer, size_t length, int flags) {
-    ssize_t ret = orig_send ? orig_send(socket, buffer, length, flags) : send(socket, buffer, length, flags);
-    if (ret > 0 && !s_in_socket_hook && is_tweak_active() && buffer) {
-        s_in_socket_hook = YES;
-        @autoreleasepool {
-            char ipStr[INET6_ADDRSTRLEN] = {0};
-            int port = 0;
-            if (get_socket_peer_info(socket, ipStr, sizeof(ipStr), &port)) {
-                if (strcmp(ipStr, "127.0.0.1") != 0 && strcmp(ipStr, "::1") != 0 && port > 0) {
-                    pthread_mutex_lock(&s_socket_radar_lock);
-                    s_total_bytes_sent += (uint64_t)ret;
-                    s_last_socket_activity_time = time(NULL);
-                    pthread_mutex_unlock(&s_socket_radar_lock);
-
-                    NSString *dump = format_full_packet_hexdump((const unsigned char *)buffer, (size_t)ret);
-                    void *c0 = __builtin_return_address(0);
-                    NSString *caller = format_caller_info(c0);
-                    logAudit(@"SOCKET-DATA", [NSString stringWithFormat:@"⬆️ [SEND] %s:%d | Size: %zd bytes | Caller: %@%@", ipStr, port, ret, caller, dump]);
-                }
-            }
-        }
-        s_in_socket_hook = NO;
-    }
+    errno = saved_errno;
     return ret;
 }
 
-// Hook POSIX recv: Ghi nhận 100% full payload dữ liệu máy chủ trả về (không cắt xén)
+// Hook POSIX send: Ghi nhận 100% full payload dữ liệu gửi đi bất đồng bộ (Zero-Blocking, bảo toàn errno)
+static ssize_t (*orig_send)(int socket, const void *buffer, size_t length, int flags) = NULL;
+static ssize_t my_send(int socket, const void *buffer, size_t length, int flags) {
+    ssize_t ret = orig_send ? orig_send(socket, buffer, length, flags) : send(socket, buffer, length, flags);
+    int saved_errno = errno;
+    if (ret > 0 && !s_in_socket_hook && is_tweak_active() && buffer) {
+        char ipStr[INET6_ADDRSTRLEN] = {0};
+        int port = 0;
+        if (get_socket_peer_info(socket, ipStr, sizeof(ipStr), &port)) {
+            if (port > 0 && strcmp(ipStr, "127.0.0.1") != 0 && strcmp(ipStr, "::1") != 0) {
+                pthread_mutex_lock(&s_socket_radar_lock);
+                s_total_bytes_sent += (uint64_t)ret;
+                s_last_socket_activity_time = time(NULL);
+                pthread_mutex_unlock(&s_socket_radar_lock);
+
+                // Zero-Blocking: Copy raw bytes sang NSData và dispatch ngầm để format hexdump & ghi file
+                NSData *packetData = [NSData dataWithBytes:buffer length:(NSUInteger)ret];
+                NSString *ipString = [NSString stringWithUTF8String:ipStr];
+                void *c0 = __builtin_return_address(0);
+                NSString *caller = format_caller_info(c0);
+
+                dispatch_async(auditQueue ?: dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+                    NSString *dump = format_full_packet_hexdump((const unsigned char *)packetData.bytes, packetData.length);
+                    if ([ZTSettings sharedSettings].enableAuditLog) {
+                        NSDateFormatter *df = [[NSDateFormatter alloc] init];
+                        [df setDateFormat:@"HH:mm:ss"];
+                        NSString *timeStr = [df stringFromDate:[NSDate date]];
+                        NSString *line = [NSString stringWithFormat:@"[%@] [PID:%d] [SOCKET-DATA] ⬆️ [SEND] %@:%d | Size: %lu bytes | Caller: %@%@\n",
+                                          timeStr, getpid(), ipString, port, (unsigned long)packetData.length, caller, dump];
+                        NSData *lineData = [line dataUsingEncoding:NSUTF8StringEncoding];
+                        append_data_to_file_safely(@"/var/mobile/Documents/ZaloAudit.log", lineData);
+                        NSString *home = NSHomeDirectory();
+                        if (home) {
+                            NSString *containerDoc = [home stringByAppendingPathComponent:@"Documents/ZaloAudit.log"];
+                            if (![containerDoc isEqualToString:@"/var/mobile/Documents/ZaloAudit.log"]) {
+                                append_data_to_file_safely(containerDoc, lineData);
+                            }
+                        }
+                    }
+                });
+            }
+        }
+    }
+    errno = saved_errno;
+    return ret;
+}
+
+// Hook POSIX recv: Ghi nhận 100% full payload dữ liệu máy chủ trả về bất đồng bộ (Zero-Blocking, bảo toàn errno)
 static ssize_t (*orig_recv)(int socket, void *buffer, size_t length, int flags) = NULL;
 static ssize_t my_recv(int socket, void *buffer, size_t length, int flags) {
     ssize_t ret = orig_recv ? orig_recv(socket, buffer, length, flags) : recv(socket, buffer, length, flags);
+    int saved_errno = errno;
     if (ret > 0 && !s_in_socket_hook && is_tweak_active() && buffer) {
-        s_in_socket_hook = YES;
-        @autoreleasepool {
-            char ipStr[INET6_ADDRSTRLEN] = {0};
-            int port = 0;
-            if (get_socket_peer_info(socket, ipStr, sizeof(ipStr), &port)) {
-                if (strcmp(ipStr, "127.0.0.1") != 0 && strcmp(ipStr, "::1") != 0 && port > 0) {
-                    pthread_mutex_lock(&s_socket_radar_lock);
-                    s_total_bytes_recv += (uint64_t)ret;
-                    s_last_socket_activity_time = time(NULL);
-                    pthread_mutex_unlock(&s_socket_radar_lock);
+        char ipStr[INET6_ADDRSTRLEN] = {0};
+        int port = 0;
+        if (get_socket_peer_info(socket, ipStr, sizeof(ipStr), &port)) {
+            if (port > 0 && strcmp(ipStr, "127.0.0.1") != 0 && strcmp(ipStr, "::1") != 0) {
+                pthread_mutex_lock(&s_socket_radar_lock);
+                s_total_bytes_recv += (uint64_t)ret;
+                s_last_socket_activity_time = time(NULL);
+                pthread_mutex_unlock(&s_socket_radar_lock);
 
-                    NSString *dump = format_full_packet_hexdump((const unsigned char *)buffer, (size_t)ret);
-                    void *c0 = __builtin_return_address(0);
-                    NSString *caller = format_caller_info(c0);
-                    logAudit(@"SOCKET-DATA", [NSString stringWithFormat:@"⬇️ [RECV] %s:%d | Size: %zd bytes | Caller: %@%@", ipStr, port, ret, caller, dump]);
-                }
+                // Zero-Blocking: Copy raw bytes sang NSData và dispatch ngầm để format hexdump & ghi file
+                NSData *packetData = [NSData dataWithBytes:buffer length:(NSUInteger)ret];
+                NSString *ipString = [NSString stringWithUTF8String:ipStr];
+                void *c0 = __builtin_return_address(0);
+                NSString *caller = format_caller_info(c0);
+
+                dispatch_async(auditQueue ?: dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+                    NSString *dump = format_full_packet_hexdump((const unsigned char *)packetData.bytes, packetData.length);
+                    if ([ZTSettings sharedSettings].enableAuditLog) {
+                        NSDateFormatter *df = [[NSDateFormatter alloc] init];
+                        [df setDateFormat:@"HH:mm:ss"];
+                        NSString *timeStr = [df stringFromDate:[NSDate date]];
+                        NSString *line = [NSString stringWithFormat:@"[%@] [PID:%d] [SOCKET-DATA] ⬇️ [RECV] %@:%d | Size: %lu bytes | Caller: %@%@\n",
+                                          timeStr, getpid(), ipString, port, (unsigned long)packetData.length, caller, dump];
+                        NSData *lineData = [line dataUsingEncoding:NSUTF8StringEncoding];
+                        append_data_to_file_safely(@"/var/mobile/Documents/ZaloAudit.log", lineData);
+                        NSString *home = NSHomeDirectory();
+                        if (home) {
+                            NSString *containerDoc = [home stringByAppendingPathComponent:@"Documents/ZaloAudit.log"];
+                            if (![containerDoc isEqualToString:@"/var/mobile/Documents/ZaloAudit.log"]) {
+                                append_data_to_file_safely(containerDoc, lineData);
+                            }
+                        }
+                    }
+                });
             }
         }
-        s_in_socket_hook = NO;
     }
+    errno = saved_errno;
     return ret;
 }
 
@@ -4160,19 +4183,14 @@ static inline uint64_t get_effective_birth_for_path(const char *path, uint64_t b
     struct timeval curTv;
     gettimeofday(&curTv, NULL);
     uint64_t nowSec = (uint64_t)curTv.tv_sec;
-    if (nowSec > base_birth + 600ULL) {
-        uint64_t max_span = nowSec - base_birth - 300ULL;
-        if (d_lib >= max_span) {
-            uint64_t step = max_span / 6ULL;
-            if (step >= 10ULL) {
-                d_var = step;
-                d_mob = step * 2ULL;
-                d_sbx = step * 3ULL + (base_birth % step);
-                d_lib = step * 4ULL + ((base_birth * 31ULL) % step);
-            } else {
-                d_sbx = (max_span > 60ULL) ? (max_span - 60ULL) : (max_span / 2ULL);
-                d_lib = (max_span > 10ULL) ? (max_span - 10ULL) : max_span;
-            }
+    if (base_birth + d_lib >= nowSec) {
+        d_lib = (nowSec > base_birth + 5ULL) ? (nowSec - base_birth - 5ULL) : 10ULL;
+        d_sbx = (d_lib > 5ULL) ? (d_lib - 3ULL) : (d_lib - 1ULL);
+        if (d_mob >= d_sbx) {
+            d_mob = (d_sbx > 30ULL) ? (d_sbx - 30ULL) : (d_sbx / 2ULL);
+        }
+        if (d_var >= d_mob) {
+            d_var = (d_mob > 30ULL) ? (d_mob - 30ULL) : (d_mob / 2ULL);
         }
     }
 
@@ -6577,10 +6595,7 @@ static void zt_early_keychain_purge_if_needed(void) {
             universal_hook_c_function("_CFCopyServerVersionDictionary", cfSrvVer, (void *)my_CFCopyServerVersionDictionary, (void **)&orig_CFCopyServerVersionDictionary);
         }
 
-        // Hook POSIX Socket Connect, Send, Recv (Bắt trọn 100% full payload các cổng riêng và giám sát treo ngâm thời gian thực)
-        universal_hook_c_function("connect", (void *)connect, (void *)my_connect, (void **)&orig_connect);
-        universal_hook_c_function("send", (void *)send, (void *)my_send, (void **)&orig_send);
-        universal_hook_c_function("recv", (void *)recv, (void *)my_recv, (void **)&orig_recv);
+        // Khởi động Timer Giám sát Treo ngâm định kỳ (Ghi nhận hoạt động socket và lưu lượng ngâm vào log)
         start_idle_radar_timer_if_needed();
 
         // Hook Hardware Uptime Clocks Radar (Chế độ Radar Giám Sát, bảo vệ 100% socket mạng khỏi lỗi EINVAL 22)

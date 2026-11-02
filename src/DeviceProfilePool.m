@@ -666,18 +666,13 @@ static NSString *detect_real_system_machine(void) {
         profile.deltaMobileSec = profile.deltaVarSec + 1100 + arc4random_uniform(1600);
     }
 
-    // 3. Sandbox Container: Được tạo sau khi có user profile /var/mobile và trước thời điểm hiện tại
-    // Mô phỏng người dùng tải ứng dụng Zalo từ App Store về máy dùng ổn định:
-    // Thời điểm cài Zalo phân bổ tự nhiên từ 5 đến 35 ngày trước thời điểm hiện tại (nhưng sau khi active máy ít nhất 2 ngày)
-    uint64_t daysAgo = 5ULL + arc4random_uniform(30); // 5 - 34 ngày trước
-    uint64_t candSandboxSec = (nowSec > daysAgo * 86400ULL) ? (nowSec - daysAgo * 86400ULL - arc4random_uniform(86400)) : (nowSec - 3600ULL);
-    
-    uint64_t minSandbox = profile.birthTimeSec + profile.deltaMobileSec + 86400ULL * 2ULL; // Sau kích hoạt máy ít nhất 2 ngày
+    // 3. Sandbox Container: Được tạo khi cài đặt ứng dụng trên máy:
+    // Với một profile mới toanh vừa cấp (mới wipe / reg acc mới), Zalo được mô phỏng vừa cài đặt từ App Store:
+    // Thời điểm cài Zalo (birth-time của Sandbox Data Container) diễn ra sát trước thời điểm hiện tại từ 30s đến 180s:
+    uint64_t candSandboxSec = (nowSec > 200ULL) ? (nowSec - (30ULL + arc4random_uniform(150))) : nowSec;
+    uint64_t minSandbox = profile.birthTimeSec + profile.deltaMobileSec + 60ULL;
     if (candSandboxSec < minSandbox) {
-        candSandboxSec = minSandbox + 3600ULL * (1ULL + arc4random_uniform(48));
-    }
-    if (candSandboxSec >= nowSec) {
-        candSandboxSec = nowSec - (1800ULL + arc4random_uniform(1800));
+        candSandboxSec = minSandbox + 60ULL;
     }
     profile.deltaSandboxSec = (uint32_t)(candSandboxSec - profile.birthTimeSec);
 
@@ -696,9 +691,9 @@ static NSString *detect_real_system_machine(void) {
         profile.deltaSandboxSec += (67 + arc4random_uniform(280));
     }
 
-    // Bảo đảm giới hạn trên không vượt quá thời điểm hiện tại
+    // Bảo đảm giới hạn trên không vượt quá thời điểm hiện tại (cách hiện tại 15-45s)
     if (profile.birthTimeSec + profile.deltaSandboxSec >= nowSec) {
-        profile.deltaSandboxSec = (uint32_t)(nowSec - profile.birthTimeSec - (1800ULL + arc4random_uniform(1800)));
+        profile.deltaSandboxSec = (uint32_t)(nowSec - profile.birthTimeSec - (15ULL + arc4random_uniform(30)));
     }
 
     // Pin ngẫu nhiên (50% - 96%) và không cắm sạc
